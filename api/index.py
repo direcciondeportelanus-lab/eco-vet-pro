@@ -16,7 +16,7 @@ import httpx
 
 BASE_DIR = Path(__file__).parent.parent
 TEMPLATE_PATH = BASE_DIR / "plantilla.pdf"
-UPLOADS_DIR = Path("/tmp/eco_vet_uploads")
+UPLOADS_DIR = BASE_DIR / "data" / "uploads"
 
 # ── Supabase config (env vars) ──
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -73,35 +73,103 @@ async def save_patterns(patterns):
         await supa_upsert("estilo", rows)
 
 # ── LLM ──
-SYSTEM_PROMPT = """Sos el asistente oficial de redacción de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901), veterinaria.
+SYSTEM_PROMPT = """Sos el asistente oficial de redacción de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901), veterinaria. Fecha de hoy: """ + datetime.now().strftime("%d/%m/%Y") + """.
 
-REGLAS ABSOLUTAS:
-- Nunca inventás datos, hallazgos, medidas ni diagnósticos que no estén en el dictado.
+═══════════════════════════════
+REGLA #0 — LO QUE NUNCA HACÉS
+═══════════════════════════════
+- NUNCA inventás datos, hallazgos, medidas ni diagnósticos que no estén en el dictado.
+- NUNCA resumís. Tu trabajo es ORDENAR, CLARIFICAR y REDACTAR con precisión lo que la Dra. dictó. Cada hallazgo, cada medida, cada detalle que ella diga debe quedar en el informe. No omitas nada.
+- NUNCA cambiás el significado clínico.
 - Si falta un dato, dejá el campo vacío.
-- Nunca cambiás el significado clínico. Mejorás redacción y ortografía, jamás contenido médico.
-- Si el dictado es ambiguo, marcá "(a confirmar)".
-- Si dice "hoy" como fecha, usá la fecha actual: """ + datetime.now().strftime("%d/%m/%Y") + """.
+- Si dice "hoy", usá la fecha de hoy.
 
-INTERPRETACIÓN DEL DICTADO:
-1) DATOS DEL PACIENTE — "paciente","tutor","dueño","mascota","derivado por","lo manda"
-   → tutor / fecha / mascota / medico_derivante.
-2) CUERPO — "hallazgos","se observa","a nivel de","conclusión","impresión diagnóstica"
-   → Orden: Indicación clínica → Hallazgos por órgano → Conclusión.
-   → Agrupá por órgano aunque los dicte salteados.
-3) CÁLCULOS — Si dice "haceme el cálculo de" seguido de valores, calculalo.
-   Fórmulas comunes: índice de resistividad renal = (Vmax - Vmin) / Vmax,
-   relación cortico-medular, volumen vesical = largo x ancho x alto x 0.52
+═══════════════════════════════
+DICCIONARIO MÉDICO VETERINARIO
+═══════════════════════════════
+Whisper suele transcribir mal estos términos. SIEMPRE corregí:
+- "vaso" → BAZO (órgano abdominal)
+- "vesiga", "besiga", "veciga" → VEJIGA
+- "prostata" → PRÓSTATA
+- "riñon" → RIÑÓN
+- "higado" → HÍGADO
+- "vesicula" → VESÍCULA BILIAR
+- "eco grafía", "eco grafia" → ecografía
+- "anecoico" → anecóico
+- "hipoecoico" → hipoecóico
+- "hiperecoico" → hiperecóico
+- "parenquima" → parénquima
+- "cortico medular" → córtico-medular
+- "linfo nódulos", "linfono dulos" → linfonódulos
+- "linfodanopatias" → linfadenopatías
+- "cisitits", "sistitis" → cistitis
+- "colecistitis" → colecistitis
+- "colestosis" → colestasis
+- "neoformacion" → neoformación
+- "hiperplacia" → hiperplasia
+Aplicá siempre acentos y ortografía médica correcta.
 
-FORMATO DEL TEXTO:
-- Títulos de sección en MAYÚSCULAS: INDICACIÓN CLÍNICA, HALLAZGOS, CONCLUSIÓN
-- Nombres de órganos en MAYÚSCULAS seguidos de dos puntos: HÍGADO:, BAZO:, etc.
-- Separar cada órgano con una línea en blanco
-- Usar puntuación correcta, comas, puntos
-- Corregir ortografía
-- Tono: profesional, tercera persona ("se observa", "se evidencia")
+═══════════════════════════════
+INTERPRETACIÓN DEL DICTADO
+═══════════════════════════════
+1) DATOS DEL PACIENTE — "paciente", "tutor", "dueño", "mascota", "derivado por", "lo manda"
+   → Ubicás cada dato en: tutor / fecha / mascota / medico_derivante.
 
-RESPONDÉ SOLO JSON válido (sin markdown, sin backticks):
-{"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
+2) CUERPO DEL INFORME — "hallazgos", "se observa", "a nivel de", "conclusión", "impresión diagnóstica"
+   → Orden fijo: INDICACIÓN CLÍNICA → hallazgos por órgano → CONCLUSIÓN
+   → Agrupá por órgano aunque los dicte salteados o vuelva a uno ya mencionado.
+   → NO resumís: transcribís todo lo que dijo, con mejor redacción y orden.
+   → SIEMPRE escribí la CONCLUSIÓN al final. Si la Dra. no la dictó, escribí: "CONCLUSIÓN: (pendiente de completar por la profesional)."
+
+3) CÁLCULOS — Si dice "haceme el cálculo", "calculame", "el volumen de":
+   - Volumen = largo × ancho × alto × 0.523 (SIEMPRE 3 medidas, nunca 4)
+   - Índice de resistividad renal (IR) = (Vmáx - Vmín) / Vmáx
+   - Relación córtico-medular: valor corteza / valor médula
+   Mostrá la fórmula y el resultado en el texto.
+
+4) COMANDOS — Respondé a órdenes directas:
+   - "corregí eso" / "cambiá lo último" → corregís la última parte
+   - "borrá eso" / "sacá eso" → eliminás lo último
+   - "agregá a..." → agregás al órgano indicado
+
+═══════════════════════════════
+FORMATO DEL TEXTO
+===============================
+- Primer bloque: datos del paciente (Paciente, Especie, Sexo, Edad)
+- Luego INDICACION CLINICA si fue dictada
+- Cada organo: nombre en MAYUSCULAS seguido de dos puntos
+- ORDEN DE ORGANOS (respetar siempre este orden):
+  PERITONEO, LINFONODULOS, VEJIGA, RINONES, GLANDULAS ADRENALES,
+  ESTOMAGO, INTESTINO DELGADO, INTESTINO GRUESO, BAZO, HIGADO,
+  VESICULA BILIAR, PANCREAS
+- Si un organo no fue mencionado, escribir: "ORGANO: Sin particularidades ecograficas evidentes."
+- Separar cada organo con una linea en blanco
+- Oraciones completas con puntuacion correcta
+- Tono: profesional, tercera persona ("se observa", "se evidencia", "presenta")
+
+CONCLUSION (SIEMPRE al final):
+- Titulo: CONCLUSION
+- Cada hallazgo patologico en una linea separada precedido por *
+- Al final agrupar organos normales: "* Organo1, organo2... sin particularidades ecograficas significativas."
+- Despues de la conclusion: "Informe realizado por:\\nM.V. Raffo Silvina"
+
+EJEMPLO DE ORGANO NORMAL:
+"PERITONEO: Sin particularidades ecograficas evidentes."
+
+EJEMPLO DE ORGANO CON HALLAZGO:
+"HIGADO: Hepatomegalia moderada. Bordes lisos, parenquima homogeneo con disminucion de la ecogenicidad en forma difusa, patron portal reforzado y venas hepaticas conservadas. Hallazgos sugestivos de hepatopatia inflamatoria aguda."
+
+EJEMPLO DE RINONES:
+"RINONES: * Rinon izquierdo: 41 x 25 mm. * Rinon derecho: 45 x 24 mm. Ambos conservan caracteristicas ecograficas normales."
+
+EJEMPLO DE CONCLUSION:
+"CONCLUSION\\n* Hepatopatia inflamatoria aguda con hepatomegalia moderada.\\n* Escasa cantidad de barro biliar.\\n* Rinones, vejiga, glandulas adrenales, pancreas, estomago, intestinos, bazo, peritoneo y linfonodulos sin particularidades ecograficas significativas.\\n\\nInforme realizado por:\\nM.V. Raffo Silvina"
+
+===============================
+RESPUESTA
+===============================
+RESPONDE SOLO con JSON valido. Sin markdown. Sin backticks. Sin texto adicional.
+{"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"texto completo del informe","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
 
 PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "llama-3.3-70b-versatile",
@@ -148,6 +216,7 @@ async def call_llm(provider, api_key, text, style):
 
 # ── PDF ──
 def generate_pdf(data, img_paths):
+    import re
     from pypdf import PdfReader, PdfWriter
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.colors import Color
@@ -160,44 +229,174 @@ def generate_pdf(data, img_paths):
     buf1 = io.BytesIO()
     c = canvas.Canvas(buf1, pagesize=A4)
     PAGE_W, PAGE_H = A4
-    tc = Color(0.2, 0.1, 0.3)
-    bc = Color(0.1, 0.1, 0.1)
 
-    fields = {"tutor": (175, 749), "fecha": (445, 749), "mascota": (155, 727), "medico_derivante": (325, 727)}
-    c.setFont("Helvetica", 11)
-    c.setFillColor(tc)
+    # Colors
+    PURPLE = Color(0.25, 0.05, 0.4)
+    BLACK = Color(0.08, 0.08, 0.08)
+
+    # ── Layout constants ──
+    LEFT_X = 75          # wider: closer to left edge
+    RIGHT_X = 540        # wider: closer to right edge
+    TEXT_W = RIGHT_X - LEFT_X  # ~465pt usable width
+    CHARS_PER_LINE = 85
+    LINE_H = 12.5
+    BODY_START_Y = 650   # lower start to avoid INFORME bar overlap
+
+    # ── Header fields in BOLD ──
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(PURPLE)
+    fields = {"tutor": (175, 745), "fecha": (445, 745), "mascota": (155, 723), "medico_derivante": (325, 723)}
     for k, (x, y) in fields.items():
         v = data.get(k, "")
         if v:
             c.drawString(x, y, v)
 
+    # ── Helper: detect if line has measurements to bold+italic ──
+    MEASURE_RE = re.compile(r'(\d+[\.,]?\d*\s*(?:×|x)\s*\d+[\.,]?\d*(?:\s*(?:×|x)\s*\d+[\.,]?\d*)?\s*(?:mm|cm|cm³|cm3)|\d+[\.,]?\d*\s*(?:mm|cm|cm³|cm3))')
+
+    def draw_line_with_formatting(canvas_obj, text, x, y, font_size, is_justified, is_last_line):
+        """Draw a line with bold+italic for measurements."""
+        parts = MEASURE_RE.split(text)
+        if len(parts) == 1:
+            # No measurements, draw normally
+            if is_justified and not is_last_line and len(text) > 50:
+                _draw_justified(canvas_obj, text, x, y, font_size)
+            else:
+                canvas_obj.drawString(x, y, text)
+        else:
+            # Has measurements - draw mixed
+            cx = x
+            for i, part in enumerate(parts):
+                if not part:
+                    continue
+                if MEASURE_RE.match(part):
+                    canvas_obj.setFont("Helvetica-BoldOblique", font_size)
+                    canvas_obj.drawString(cx, y, part)
+                    cx += canvas_obj.stringWidth(part, "Helvetica-BoldOblique", font_size)
+                    canvas_obj.setFont("Helvetica", font_size)
+                else:
+                    canvas_obj.drawString(cx, y, part)
+                    cx += canvas_obj.stringWidth(part, "Helvetica", font_size)
+
+    def _draw_justified(canvas_obj, text, x, y, font_size):
+        """Draw text justified to fill TEXT_W."""
+        words = text.split()
+        if len(words) <= 1:
+            canvas_obj.drawString(x, y, text)
+            return
+        total_text_w = sum(canvas_obj.stringWidth(w, canvas_obj._fontname, font_size) for w in words)
+        total_space = TEXT_W - total_text_w
+        if total_space < 0 or total_space > TEXT_W * 0.5:
+            canvas_obj.drawString(x, y, text)
+            return
+        space_w = total_space / (len(words) - 1)
+        cx = x
+        for word in words:
+            canvas_obj.drawString(cx, y, word)
+            cx += canvas_obj.stringWidth(word, canvas_obj._fontname, font_size) + space_w
+
+    # ── Body text ──
     body = data.get("cuerpo_informe", "")
     if body:
-        y = 678
+        y = BODY_START_Y
+        font_size = 10
+
         for para in body.split("\n"):
             if para.strip() == "":
-                y -= 8
+                y -= 7
                 continue
-            # Check if it's a title line (ALL CAPS or ends with :)
+
             stripped = para.strip()
-            is_title = stripped.isupper() or (stripped.endswith(":") and len(stripped) < 40)
 
-            if is_title:
+            # Detect paragraph type
+            is_conclusion_header = stripped.upper().startswith("CONCLUSI")
+            is_organ_header = (stripped.endswith(":") and len(stripped.split(":")[0]) < 30 and stripped.split(":")[0].strip().isupper())
+            is_section_header = stripped.isupper() and len(stripped) < 50
+            is_conclusion_item = stripped.startswith("*")
+            is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
+
+            if is_conclusion_header or is_section_header:
+                # CONCLUSIÓN / HALLAZGOS / INDICACIÓN CLÍNICA
+                c.setFont("Helvetica-Bold", 12)
+                c.setFillColor(PURPLE)
+                y -= 8
+                c.drawString(LEFT_X, y, stripped)
+                y -= LINE_H + 4
+                c.setFont("Helvetica", font_size)
+                c.setFillColor(BLACK)
+                continue
+
+            if is_organ_header:
+                # HÍGADO: ... - organ name bold, rest normal
+                colon_idx = stripped.index(":")
+                organ_name = stripped[:colon_idx + 1]
+                organ_text = stripped[colon_idx + 1:].strip()
+                y -= 5  # space before organ
+
+                # Draw organ name in BOLD
                 c.setFont("Helvetica-Bold", 11)
-                c.setFillColor(Color(0.2, 0.1, 0.35))
-                y -= 4  # extra space before title
-            else:
-                c.setFont("Helvetica", 10)
-                c.setFillColor(bc)
+                c.setFillColor(PURPLE)
+                c.drawString(LEFT_X, y, organ_name)
+                organ_w = c.stringWidth(organ_name + " ", "Helvetica-Bold", 11)
 
-            for line in (textwrap.wrap(para, width=62) or [""]):
-                if y < 65:
-                    break
-                c.drawString(115, y, line)
-                y -= 14
+                if organ_text:
+                    # Draw rest of organ text
+                    c.setFont("Helvetica", font_size)
+                    c.setFillColor(BLACK)
+                    remaining_w = TEXT_W - organ_w
+                    remaining_chars = int(remaining_w / (c.stringWidth("a", "Helvetica", font_size)))
 
-            if is_title:
-                y -= 2  # extra space after title
+                    # First line after organ name
+                    first_wrap = textwrap.wrap(organ_text, width=remaining_chars) or [""]
+                    draw_line_with_formatting(c, first_wrap[0], LEFT_X + organ_w, y, font_size, False, len(first_wrap) <= 1)
+                    y -= LINE_H
+
+                    # Remaining lines
+                    if len(first_wrap) > 1:
+                        rest_text = organ_text[len(first_wrap[0]):].strip()
+                        rest_lines = textwrap.wrap(rest_text, width=CHARS_PER_LINE) or []
+                        for li, line in enumerate(rest_lines):
+                            if y < 65: break
+                            c.setFont("Helvetica", font_size)
+                            draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, li == len(rest_lines) - 1)
+                            y -= LINE_H
+                else:
+                    y -= LINE_H
+                continue
+
+            if is_conclusion_item:
+                # * Item in bold
+                c.setFont("Helvetica-Bold", font_size)
+                c.setFillColor(BLACK)
+                item_text = stripped
+                wrapped = textwrap.wrap(item_text, width=CHARS_PER_LINE) or [item_text]
+                for li, line in enumerate(wrapped):
+                    if y < 65: break
+                    c.drawString(LEFT_X, y, line)
+                    y -= LINE_H
+                c.setFont("Helvetica", font_size)
+                continue
+
+            if is_signature:
+                # Right-aligned signature
+                c.setFont("Helvetica-Bold", 10)
+                c.setFillColor(PURPLE)
+                text_w = c.stringWidth(stripped, "Helvetica-Bold", 10)
+                c.drawString(RIGHT_X - text_w, y, stripped)
+                y -= LINE_H + 2
+                c.setFont("Helvetica", font_size)
+                c.setFillColor(BLACK)
+                continue
+
+            # Regular paragraph - justified with measurement formatting
+            c.setFont("Helvetica", font_size)
+            c.setFillColor(BLACK)
+            wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
+            for li, line in enumerate(wrapped):
+                if y < 65: break
+                is_last = (li == len(wrapped) - 1)
+                draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, is_last)
+                y -= LINE_H
 
     c.save()
     buf1.seek(0)
