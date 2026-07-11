@@ -16,7 +16,7 @@ import httpx
 
 BASE_DIR = Path(__file__).parent.parent
 TEMPLATE_PATH = BASE_DIR / "plantilla.pdf"
-UPLOADS_DIR = BASE_DIR / "data" / "uploads"
+UPLOADS_DIR = Path("/tmp/eco_vet_uploads")
 
 # ── Supabase config (env vars) ──
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
