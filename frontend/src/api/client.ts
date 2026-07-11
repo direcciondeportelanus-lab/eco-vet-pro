@@ -34,3 +34,18 @@ export async function getStats() {
     return res.json()
   } catch { return { total_informes: 0, patrones: 0 } }
 }
+
+export async function saveReport(data: Record<string, string>) {
+  const form = new FormData()
+  Object.entries(data).forEach(([k, v]) => form.append(k, v))
+  const res = await fetch(`${API_BASE}/save-report`, { method: 'POST', body: form })
+  if (!res.ok) throw new Error('Error al guardar')
+  return res.json()
+}
+
+export async function getReports() {
+  try {
+    const res = await fetch(`${API_BASE}/informes`)
+    return res.json()
+  } catch { return [] }
+}

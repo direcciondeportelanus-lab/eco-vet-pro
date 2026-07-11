@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats } from './api/client'
+import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
+import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport } from './api/client'
 
 type View='dashboard'|'nuevo'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -258,9 +258,17 @@ export default function App(){
                 <div className="result-title">PDF generado correctamente</div>
                 <div className="result-sub">{data.mascota||'Informe'} — {data.fecha}</div>
               </div></div>
-              <div className="panel" style={{padding:0,overflow:'hidden'}}><iframe src={pdfUrl} className="pdf-frame" title="PDF"/></div>
-              <button className="btn btn-blue" onClick={sharePDF}><Send size={16}/> Compartir / Descargar</button>
-              <button className="btn btn-orange" onClick={()=>setStep('edit')}><Pencil size={14}/> Seguir editando</button>
+              <div className="panel" style={{padding:0,overflow:'hidden'}}>
+                <iframe src={pdfUrl+'#toolbar=1&navpanes=0'} className="pdf-frame" title="PDF" style={{minHeight:600}}/>
+              </div>
+              <button className="btn btn-blue" onClick={async()=>{
+                try{await saveReport({...data,transcripcion_original:transcription});setSuccess('Informe guardado en la base de datos')}catch(e:any){setError(e.message)}
+              }}><Save size={16}/> Guardar informe</button>
+              <button className="btn btn-orange" onClick={sharePDF}><Send size={16}/> Compartir por WhatsApp</button>
+              <button className="btn btn-glass" onClick={()=>{
+                const a=document.createElement('a');a.href=pdfUrl;a.download=`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`;a.click()
+              }}><Download size={16}/> Descargar PDF</button>
+              <button className="btn btn-glass" onClick={()=>setStep('edit')}><Pencil size={14}/> Seguir editando</button>
               <button className="btn btn-ghost" onClick={startNew}><Plus size={14}/> Nuevo informe</button>
             </>)}
           </div>

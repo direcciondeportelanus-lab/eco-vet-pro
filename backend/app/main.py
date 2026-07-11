@@ -508,17 +508,29 @@ async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = F
         try: os.unlink(p)
         except: pass
 
-    # Save to Supabase
-    if SUPABASE_URL:
-        await supa_post("informes", {
-            "fecha": fecha, "tutor": tutor, "mascota": mascota,
-            "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe,
-            "imagenes_count": len(img_paths)
-        })
-
     fn = f"Informe_{mascota or 'eco'}_{fecha.replace('/', '_')}.pdf"
     return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",
-                             headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+                             headers={"Content-Disposition": f'inline; filename="{fn}"'})
+
+@app.post("/api/save-report")
+async def save_report(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
+                      medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
+                      transcripcion_original: str = Form("")):
+    """Save report to Supabase and update learned style."""
+    result = {"saved": False, "id": None}
+
+    if SUPABASE_URL:
+        row = await supa_post("informes", {
+            "fecha": fecha, "tutor": tutor, "mascota": mascota,
+            "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe,
+            "transcripcion_original": transcripcion_original,
+        })
+        if row and isinstance(row, list) and len(row) > 0:
+            result = {"saved": True, "id": row[0].get("id")}
+        elif row:
+            result = {"saved": True, "id": None}
+
+    return result
 
 @app.get("/api/stats")
 async def stats():
