@@ -73,35 +73,103 @@ async def save_patterns(patterns):
         await supa_upsert("estilo", rows)
 
 # ── LLM ──
-SYSTEM_PROMPT = """Sos el asistente oficial de redacción de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901), veterinaria.
+SYSTEM_PROMPT = """Sos el asistente oficial de redacción de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901), veterinaria. Fecha de hoy: """ + datetime.now().strftime("%d/%m/%Y") + """.
 
-REGLAS ABSOLUTAS:
-- Nunca inventás datos, hallazgos, medidas ni diagnósticos que no estén en el dictado.
+═══════════════════════════════
+REGLA #0 — LO QUE NUNCA HACÉS
+═══════════════════════════════
+- NUNCA inventás datos, hallazgos, medidas ni diagnósticos que no estén en el dictado.
+- NUNCA resumís. Tu trabajo es ORDENAR, CLARIFICAR y REDACTAR con precisión lo que la Dra. dictó. Cada hallazgo, cada medida, cada detalle que ella diga debe quedar en el informe. No omitas nada.
+- NUNCA cambiás el significado clínico.
 - Si falta un dato, dejá el campo vacío.
-- Nunca cambiás el significado clínico. Mejorás redacción y ortografía, jamás contenido médico.
-- Si el dictado es ambiguo, marcá "(a confirmar)".
-- Si dice "hoy" como fecha, usá la fecha actual: """ + datetime.now().strftime("%d/%m/%Y") + """.
+- Si dice "hoy", usá la fecha de hoy.
 
-INTERPRETACIÓN DEL DICTADO:
-1) DATOS DEL PACIENTE — "paciente","tutor","dueño","mascota","derivado por","lo manda"
-   → tutor / fecha / mascota / medico_derivante.
-2) CUERPO — "hallazgos","se observa","a nivel de","conclusión","impresión diagnóstica"
-   → Orden: Indicación clínica → Hallazgos por órgano → Conclusión.
-   → Agrupá por órgano aunque los dicte salteados.
-3) CÁLCULOS — Si dice "haceme el cálculo de" seguido de valores, calculalo.
-   Fórmulas comunes: índice de resistividad renal = (Vmax - Vmin) / Vmax,
-   relación cortico-medular, volumen vesical = largo x ancho x alto x 0.52
+═══════════════════════════════
+DICCIONARIO MÉDICO VETERINARIO
+═══════════════════════════════
+Whisper suele transcribir mal estos términos. SIEMPRE corregí:
+- "vaso" → BAZO (órgano abdominal)
+- "vesiga", "besiga", "veciga" → VEJIGA
+- "prostata" → PRÓSTATA
+- "riñon" → RIÑÓN
+- "higado" → HÍGADO
+- "vesicula" → VESÍCULA BILIAR
+- "eco grafía", "eco grafia" → ecografía
+- "anecoico" → anecóico
+- "hipoecoico" → hipoecóico
+- "hiperecoico" → hiperecóico
+- "parenquima" → parénquima
+- "cortico medular" → córtico-medular
+- "linfo nódulos", "linfono dulos" → linfonódulos
+- "linfodanopatias" → linfadenopatías
+- "cisitits", "sistitis" → cistitis
+- "colecistitis" → colecistitis
+- "colestosis" → colestasis
+- "neoformacion" → neoformación
+- "hiperplacia" → hiperplasia
+Aplicá siempre acentos y ortografía médica correcta.
 
-FORMATO DEL TEXTO:
-- Títulos de sección en MAYÚSCULAS: INDICACIÓN CLÍNICA, HALLAZGOS, CONCLUSIÓN
-- Nombres de órganos en MAYÚSCULAS seguidos de dos puntos: HÍGADO:, BAZO:, etc.
-- Separar cada órgano con una línea en blanco
-- Usar puntuación correcta, comas, puntos
-- Corregir ortografía
-- Tono: profesional, tercera persona ("se observa", "se evidencia")
+═══════════════════════════════
+INTERPRETACIÓN DEL DICTADO
+═══════════════════════════════
+1) DATOS DEL PACIENTE — "paciente", "tutor", "dueño", "mascota", "derivado por", "lo manda"
+   → Ubicás cada dato en: tutor / fecha / mascota / medico_derivante.
 
-RESPONDÉ SOLO JSON válido (sin markdown, sin backticks):
-{"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
+2) CUERPO DEL INFORME — "hallazgos", "se observa", "a nivel de", "conclusión", "impresión diagnóstica"
+   → Orden fijo: INDICACIÓN CLÍNICA → hallazgos por órgano → CONCLUSIÓN
+   → Agrupá por órgano aunque los dicte salteados o vuelva a uno ya mencionado.
+   → NO resumís: transcribís todo lo que dijo, con mejor redacción y orden.
+   → SIEMPRE escribí la CONCLUSIÓN al final. Si la Dra. no la dictó, escribí: "CONCLUSIÓN: (pendiente de completar por la profesional)."
+
+3) CÁLCULOS — Si dice "haceme el cálculo", "calculame", "el volumen de":
+   - Volumen = largo × ancho × alto × 0.523 (SIEMPRE 3 medidas, nunca 4)
+   - Índice de resistividad renal (IR) = (Vmáx - Vmín) / Vmáx
+   - Relación córtico-medular: valor corteza / valor médula
+   Mostrá la fórmula y el resultado en el texto.
+
+4) COMANDOS — Respondé a órdenes directas:
+   - "corregí eso" / "cambiá lo último" → corregís la última parte
+   - "borrá eso" / "sacá eso" → eliminás lo último
+   - "agregá a..." → agregás al órgano indicado
+
+═══════════════════════════════
+FORMATO DEL TEXTO
+===============================
+- Primer bloque: datos del paciente (Paciente, Especie, Sexo, Edad)
+- Luego INDICACION CLINICA si fue dictada
+- Cada organo: nombre en MAYUSCULAS seguido de dos puntos
+- ORDEN DE ORGANOS (respetar siempre este orden):
+  PERITONEO, LINFONODULOS, VEJIGA, RINONES, GLANDULAS ADRENALES,
+  ESTOMAGO, INTESTINO DELGADO, INTESTINO GRUESO, BAZO, HIGADO,
+  VESICULA BILIAR, PANCREAS
+- Si un organo no fue mencionado, escribir: "ORGANO: Sin particularidades ecograficas evidentes."
+- Separar cada organo con una linea en blanco
+- Oraciones completas con puntuacion correcta
+- Tono: profesional, tercera persona ("se observa", "se evidencia", "presenta")
+
+CONCLUSION (SIEMPRE al final):
+- Titulo: CONCLUSION
+- Cada hallazgo patologico en una linea separada precedido por *
+- Al final agrupar organos normales: "* Organo1, organo2... sin particularidades ecograficas significativas."
+- Despues de la conclusion: "Informe realizado por:\\nM.V. Raffo Silvina"
+
+EJEMPLO DE ORGANO NORMAL:
+"PERITONEO: Sin particularidades ecograficas evidentes."
+
+EJEMPLO DE ORGANO CON HALLAZGO:
+"HIGADO: Hepatomegalia moderada. Bordes lisos, parenquima homogeneo con disminucion de la ecogenicidad en forma difusa, patron portal reforzado y venas hepaticas conservadas. Hallazgos sugestivos de hepatopatia inflamatoria aguda."
+
+EJEMPLO DE RINONES:
+"RINONES: * Rinon izquierdo: 41 x 25 mm. * Rinon derecho: 45 x 24 mm. Ambos conservan caracteristicas ecograficas normales."
+
+EJEMPLO DE CONCLUSION:
+"CONCLUSION\\n* Hepatopatia inflamatoria aguda con hepatomegalia moderada.\\n* Escasa cantidad de barro biliar.\\n* Rinones, vejiga, glandulas adrenales, pancreas, estomago, intestinos, bazo, peritoneo y linfonodulos sin particularidades ecograficas significativas.\\n\\nInforme realizado por:\\nM.V. Raffo Silvina"
+
+===============================
+RESPUESTA
+===============================
+RESPONDE SOLO con JSON valido. Sin markdown. Sin backticks. Sin texto adicional.
+{"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"texto completo del informe","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
 
 PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "llama-3.3-70b-versatile",
@@ -173,31 +241,56 @@ def generate_pdf(data, img_paths):
 
     body = data.get("cuerpo_informe", "")
     if body:
-        y = 678
+        # Wider margins: x=90 to x=530 (440pt wide vs 380 before)
+        LEFT_X = 90
+        RIGHT_X = 530
+        TEXT_W = RIGHT_X - LEFT_X
+        CHARS_PER_LINE = 78  # wider text
+        y = 665  # start lower to avoid overlapping INFORME bar
+
         for para in body.split("\n"):
             if para.strip() == "":
-                y -= 8
+                y -= 6
                 continue
-            # Check if it's a title line (ALL CAPS or ends with :)
+
             stripped = para.strip()
-            is_title = stripped.isupper() or (stripped.endswith(":") and len(stripped) < 40)
+            # Title detection: ALL CAPS, ends with ":", or is a section header
+            is_title = (stripped.isupper() and len(stripped) < 50) or \
+                       (stripped.endswith(":") and len(stripped) < 45 and stripped.split(":")[0].isupper())
 
             if is_title:
                 c.setFont("Helvetica-Bold", 11)
-                c.setFillColor(Color(0.2, 0.1, 0.35))
-                y -= 4  # extra space before title
+                c.setFillColor(Color(0.25, 0.05, 0.4))
+                y -= 6  # extra space before title
             else:
                 c.setFont("Helvetica", 10)
                 c.setFillColor(bc)
 
-            for line in (textwrap.wrap(para, width=62) or [""]):
+            wrapped = textwrap.wrap(para, width=CHARS_PER_LINE) or [""]
+            for idx, line in enumerate(wrapped):
                 if y < 65:
                     break
-                c.drawString(115, y, line)
-                y -= 14
+
+                # Justify: add spaces between words to fill the line width
+                if not is_title and idx < len(wrapped) - 1 and len(line) > 40:
+                    words = line.split()
+                    if len(words) > 1:
+                        total_text_w = c.stringWidth(line.replace(" ", ""), c._fontname, c._fontsize)
+                        total_space = TEXT_W - total_text_w
+                        space_w = total_space / (len(words) - 1)
+                        cx = LEFT_X
+                        for wi, word in enumerate(words):
+                            c.drawString(cx, y, word)
+                            cx += c.stringWidth(word, c._fontname, c._fontsize) + space_w
+                    else:
+                        c.drawString(LEFT_X, y, line)
+                else:
+                    c.drawString(LEFT_X, y, line)
+
+                y -= 13
 
             if is_title:
-                y -= 2  # extra space after title
+                y -= 3  # extra space after title
 
     c.save()
     buf1.seek(0)
