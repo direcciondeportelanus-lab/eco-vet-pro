@@ -216,6 +216,7 @@ async def call_llm(provider, api_key, text, style):
 
 # ── PDF ──
 def generate_pdf(data, img_paths):
+    import re
     from pypdf import PdfReader, PdfWriter
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.colors import Color
@@ -228,69 +229,174 @@ def generate_pdf(data, img_paths):
     buf1 = io.BytesIO()
     c = canvas.Canvas(buf1, pagesize=A4)
     PAGE_W, PAGE_H = A4
-    tc = Color(0.2, 0.1, 0.3)
-    bc = Color(0.1, 0.1, 0.1)
 
-    fields = {"tutor": (175, 749), "fecha": (445, 749), "mascota": (155, 727), "medico_derivante": (325, 727)}
-    c.setFont("Helvetica", 11)
-    c.setFillColor(tc)
+    # Colors
+    PURPLE = Color(0.25, 0.05, 0.4)
+    BLACK = Color(0.08, 0.08, 0.08)
+
+    # ── Layout constants ──
+    LEFT_X = 75          # wider: closer to left edge
+    RIGHT_X = 540        # wider: closer to right edge
+    TEXT_W = RIGHT_X - LEFT_X  # ~465pt usable width
+    CHARS_PER_LINE = 85
+    LINE_H = 12.5
+    BODY_START_Y = 650   # lower start to avoid INFORME bar overlap
+
+    # ── Header fields in BOLD ──
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(PURPLE)
+    fields = {"tutor": (175, 745), "fecha": (445, 745), "mascota": (155, 723), "medico_derivante": (325, 723)}
     for k, (x, y) in fields.items():
         v = data.get(k, "")
         if v:
             c.drawString(x, y, v)
 
+    # ── Helper: detect if line has measurements to bold+italic ──
+    MEASURE_RE = re.compile(r'(\d+[\.,]?\d*\s*(?:×|x)\s*\d+[\.,]?\d*(?:\s*(?:×|x)\s*\d+[\.,]?\d*)?\s*(?:mm|cm|cm³|cm3)|\d+[\.,]?\d*\s*(?:mm|cm|cm³|cm3))')
+
+    def draw_line_with_formatting(canvas_obj, text, x, y, font_size, is_justified, is_last_line):
+        """Draw a line with bold+italic for measurements."""
+        parts = MEASURE_RE.split(text)
+        if len(parts) == 1:
+            # No measurements, draw normally
+            if is_justified and not is_last_line and len(text) > 50:
+                _draw_justified(canvas_obj, text, x, y, font_size)
+            else:
+                canvas_obj.drawString(x, y, text)
+        else:
+            # Has measurements - draw mixed
+            cx = x
+            for i, part in enumerate(parts):
+                if not part:
+                    continue
+                if MEASURE_RE.match(part):
+                    canvas_obj.setFont("Helvetica-BoldOblique", font_size)
+                    canvas_obj.drawString(cx, y, part)
+                    cx += canvas_obj.stringWidth(part, "Helvetica-BoldOblique", font_size)
+                    canvas_obj.setFont("Helvetica", font_size)
+                else:
+                    canvas_obj.drawString(cx, y, part)
+                    cx += canvas_obj.stringWidth(part, "Helvetica", font_size)
+
+    def _draw_justified(canvas_obj, text, x, y, font_size):
+        """Draw text justified to fill TEXT_W."""
+        words = text.split()
+        if len(words) <= 1:
+            canvas_obj.drawString(x, y, text)
+            return
+        total_text_w = sum(canvas_obj.stringWidth(w, canvas_obj._fontname, font_size) for w in words)
+        total_space = TEXT_W - total_text_w
+        if total_space < 0 or total_space > TEXT_W * 0.5:
+            canvas_obj.drawString(x, y, text)
+            return
+        space_w = total_space / (len(words) - 1)
+        cx = x
+        for word in words:
+            canvas_obj.drawString(cx, y, word)
+            cx += canvas_obj.stringWidth(word, canvas_obj._fontname, font_size) + space_w
+
+    # ── Body text ──
     body = data.get("cuerpo_informe", "")
     if body:
-        # Wider margins: x=90 to x=530 (440pt wide vs 380 before)
-        LEFT_X = 90
-        RIGHT_X = 530
-        TEXT_W = RIGHT_X - LEFT_X
-        CHARS_PER_LINE = 78  # wider text
-        y = 665  # start lower to avoid overlapping INFORME bar
+        y = BODY_START_Y
+        font_size = 10
 
         for para in body.split("\n"):
             if para.strip() == "":
-                y -= 6
+                y -= 7
                 continue
 
             stripped = para.strip()
-            # Title detection: ALL CAPS, ends with ":", or is a section header
-            is_title = (stripped.isupper() and len(stripped) < 50) or \
-                       (stripped.endswith(":") and len(stripped) < 45 and stripped.split(":")[0].isupper())
 
-            if is_title:
+            # Detect paragraph type
+            is_conclusion_header = stripped.upper().startswith("CONCLUSI")
+            is_organ_header = (stripped.endswith(":") and len(stripped.split(":")[0]) < 30 and stripped.split(":")[0].strip().isupper())
+            is_section_header = stripped.isupper() and len(stripped) < 50
+            is_conclusion_item = stripped.startswith("*")
+            is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
+
+            if is_conclusion_header or is_section_header:
+                # CONCLUSIÓN / HALLAZGOS / INDICACIÓN CLÍNICA
+                c.setFont("Helvetica-Bold", 12)
+                c.setFillColor(PURPLE)
+                y -= 8
+                c.drawString(LEFT_X, y, stripped)
+                y -= LINE_H + 4
+                c.setFont("Helvetica", font_size)
+                c.setFillColor(BLACK)
+                continue
+
+            if is_organ_header:
+                # HÍGADO: ... - organ name bold, rest normal
+                colon_idx = stripped.index(":")
+                organ_name = stripped[:colon_idx + 1]
+                organ_text = stripped[colon_idx + 1:].strip()
+                y -= 5  # space before organ
+
+                # Draw organ name in BOLD
                 c.setFont("Helvetica-Bold", 11)
-                c.setFillColor(Color(0.25, 0.05, 0.4))
-                y -= 6  # extra space before title
-            else:
-                c.setFont("Helvetica", 10)
-                c.setFillColor(bc)
+                c.setFillColor(PURPLE)
+                c.drawString(LEFT_X, y, organ_name)
+                organ_w = c.stringWidth(organ_name + " ", "Helvetica-Bold", 11)
 
-            wrapped = textwrap.wrap(para, width=CHARS_PER_LINE) or [""]
-            for idx, line in enumerate(wrapped):
-                if y < 65:
-                    break
+                if organ_text:
+                    # Draw rest of organ text
+                    c.setFont("Helvetica", font_size)
+                    c.setFillColor(BLACK)
+                    remaining_w = TEXT_W - organ_w
+                    remaining_chars = int(remaining_w / (c.stringWidth("a", "Helvetica", font_size)))
 
-                # Justify: add spaces between words to fill the line width
-                if not is_title and idx < len(wrapped) - 1 and len(line) > 40:
-                    words = line.split()
-                    if len(words) > 1:
-                        total_text_w = c.stringWidth(line.replace(" ", ""), c._fontname, c._fontsize)
-                        total_space = TEXT_W - total_text_w
-                        space_w = total_space / (len(words) - 1)
-                        cx = LEFT_X
-                        for wi, word in enumerate(words):
-                            c.drawString(cx, y, word)
-                            cx += c.stringWidth(word, c._fontname, c._fontsize) + space_w
-                    else:
-                        c.drawString(LEFT_X, y, line)
+                    # First line after organ name
+                    first_wrap = textwrap.wrap(organ_text, width=remaining_chars) or [""]
+                    draw_line_with_formatting(c, first_wrap[0], LEFT_X + organ_w, y, font_size, False, len(first_wrap) <= 1)
+                    y -= LINE_H
+
+                    # Remaining lines
+                    if len(first_wrap) > 1:
+                        rest_text = organ_text[len(first_wrap[0]):].strip()
+                        rest_lines = textwrap.wrap(rest_text, width=CHARS_PER_LINE) or []
+                        for li, line in enumerate(rest_lines):
+                            if y < 65: break
+                            c.setFont("Helvetica", font_size)
+                            draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, li == len(rest_lines) - 1)
+                            y -= LINE_H
                 else:
+                    y -= LINE_H
+                continue
+
+            if is_conclusion_item:
+                # * Item in bold
+                c.setFont("Helvetica-Bold", font_size)
+                c.setFillColor(BLACK)
+                item_text = stripped
+                wrapped = textwrap.wrap(item_text, width=CHARS_PER_LINE) or [item_text]
+                for li, line in enumerate(wrapped):
+                    if y < 65: break
                     c.drawString(LEFT_X, y, line)
+                    y -= LINE_H
+                c.setFont("Helvetica", font_size)
+                continue
 
-                y -= 13
+            if is_signature:
+                # Right-aligned signature
+                c.setFont("Helvetica-Bold", 10)
+                c.setFillColor(PURPLE)
+                text_w = c.stringWidth(stripped, "Helvetica-Bold", 10)
+                c.drawString(RIGHT_X - text_w, y, stripped)
+                y -= LINE_H + 2
+                c.setFont("Helvetica", font_size)
+                c.setFillColor(BLACK)
+                continue
 
-            if is_title:
-                y -= 3  # extra space after title
+            # Regular paragraph - justified with measurement formatting
+            c.setFont("Helvetica", font_size)
+            c.setFillColor(BLACK)
+            wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
+            for li, line in enumerate(wrapped):
+                if y < 65: break
+                is_last = (li == len(wrapped) - 1)
+                draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, is_last)
+                y -= LINE_H
 
     c.save()
     buf1.seek(0)
