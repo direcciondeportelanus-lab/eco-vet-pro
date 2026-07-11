@@ -295,8 +295,31 @@ def generate_pdf(data, img_paths):
             canvas_obj.drawString(cx, y, word)
             cx += canvas_obj.stringWidth(word, canvas_obj._fontname, font_size) + space_w
 
-    # ── Body text ──
+    # ── Body text with auto-pagination ──
     body = data.get("cuerpo_informe", "")
+    overlay_buffers = []  # list of overlay BytesIO for each page
+    current_buf = buf1
+    page_num = 1
+    BOTTOM_MARGIN = 70
+    CONTINUATION_TOP = 690  # where text starts on continuation pages
+
+    def new_page():
+        """Finish current overlay and start a new one for continuation."""
+        nonlocal c, current_buf, y, page_num
+        c.save()
+        current_buf.seek(0)
+        overlay_buffers.append(current_buf)
+        page_num += 1
+        current_buf = io.BytesIO()
+        c = canvas.Canvas(current_buf, pagesize=A4)
+        y = CONTINUATION_TOP
+
+    def check_y(needed=LINE_H):
+        """If not enough space, create a new page."""
+        nonlocal y
+        if y - needed < BOTTOM_MARGIN:
+            new_page()
+
     if body:
         y = BODY_START_Y
         font_size = 10
@@ -314,7 +337,7 @@ def generate_pdf(data, img_paths):
             is_conclusion_item = stripped.startswith("*")
             is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
 
-            # Organ detection: line contains "WORD:" where WORD is uppercase at the start
+            # Organ detection
             is_organ_header = False
             if ":" in stripped and not is_conclusion_header and not is_section_header:
                 colon_pos = stripped.index(":")
@@ -323,7 +346,7 @@ def generate_pdf(data, img_paths):
                     is_organ_header = True
 
             if is_conclusion_header or is_section_header:
-                # CONCLUSIÓN / HALLAZGOS / INDICACIÓN CLÍNICA
+                check_y(LINE_H + 12)
                 c.setFont("Helvetica-Bold", 12)
                 c.setFillColor(PURPLE)
                 y -= 8
@@ -334,36 +357,32 @@ def generate_pdf(data, img_paths):
                 continue
 
             if is_organ_header:
-                # HÍGADO: ... - organ name bold purple, rest normal
                 colon_idx = stripped.index(":")
                 organ_name = stripped[:colon_idx + 1]
                 organ_text = stripped[colon_idx + 1:].strip()
-                y -= 10  # more space before each organ
+                check_y(LINE_H + 10)
+                y -= 10
 
-                # Draw organ name in BOLD PURPLE
                 c.setFont("Helvetica-Bold", 11)
                 c.setFillColor(PURPLE)
                 c.drawString(LEFT_X, y, organ_name)
                 organ_w = c.stringWidth(organ_name + " ", "Helvetica-Bold", 11)
 
                 if organ_text:
-                    # Draw rest of organ text
                     c.setFont("Helvetica", font_size)
                     c.setFillColor(BLACK)
                     remaining_w = TEXT_W - organ_w
                     remaining_chars = int(remaining_w / (c.stringWidth("a", "Helvetica", font_size)))
 
-                    # First line after organ name
                     first_wrap = textwrap.wrap(organ_text, width=remaining_chars) or [""]
                     draw_line_with_formatting(c, first_wrap[0], LEFT_X + organ_w, y, font_size, False, len(first_wrap) <= 1)
                     y -= LINE_H
 
-                    # Remaining lines
                     if len(first_wrap) > 1:
                         rest_text = organ_text[len(first_wrap[0]):].strip()
                         rest_lines = textwrap.wrap(rest_text, width=CHARS_PER_LINE) or []
                         for li, line in enumerate(rest_lines):
-                            if y < 65: break
+                            check_y()
                             c.setFont("Helvetica", font_size)
                             draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, li == len(rest_lines) - 1)
                             y -= LINE_H
@@ -372,20 +391,18 @@ def generate_pdf(data, img_paths):
                 continue
 
             if is_conclusion_item:
-                # * Item in bold
                 c.setFont("Helvetica-Bold", font_size)
                 c.setFillColor(BLACK)
-                item_text = stripped
-                wrapped = textwrap.wrap(item_text, width=CHARS_PER_LINE) or [item_text]
+                wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
                 for li, line in enumerate(wrapped):
-                    if y < 65: break
+                    check_y()
                     c.drawString(LEFT_X, y, line)
                     y -= LINE_H
                 c.setFont("Helvetica", font_size)
                 continue
 
             if is_signature:
-                # Right-aligned signature
+                check_y()
                 c.setFont("Helvetica-Bold", 10)
                 c.setFillColor(PURPLE)
                 text_w = c.stringWidth(stripped, "Helvetica-Bold", 10)
@@ -395,21 +412,32 @@ def generate_pdf(data, img_paths):
                 c.setFillColor(BLACK)
                 continue
 
-            # Regular paragraph - justified with measurement formatting
+            # Regular paragraph
             c.setFont("Helvetica", font_size)
             c.setFillColor(BLACK)
             wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
             for li, line in enumerate(wrapped):
-                if y < 65: break
+                check_y()
                 is_last = (li == len(wrapped) - 1)
                 draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, is_last)
                 y -= LINE_H
 
+    # Finish last overlay
     c.save()
-    buf1.seek(0)
-    page1 = template.pages[0]
-    page1.merge_page(PdfReader(buf1).pages[0])
-    writer.add_page(page1)
+    current_buf.seek(0)
+    overlay_buffers.append(current_buf)
+
+    # ── Merge overlays with template pages ──
+    for i, obuf in enumerate(overlay_buffers):
+        if i == 0:
+            # First page uses page 1 of template
+            pg = template.pages[0]
+        else:
+            # Continuation pages also use page 1 template (same header/footer)
+            template_copy = PdfReader(str(TEMPLATE_PATH))
+            pg = template_copy.pages[0]
+        pg.merge_page(PdfReader(obuf).pages[0])
+        writer.add_page(pg)
 
     if img_paths and len(template.pages) > 1:
         buf2 = io.BytesIO()
