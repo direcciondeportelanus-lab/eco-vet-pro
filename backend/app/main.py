@@ -239,7 +239,7 @@ def generate_pdf(data, img_paths):
     RIGHT_X = 540        # wider: closer to right edge
     TEXT_W = RIGHT_X - LEFT_X  # ~465pt usable width
     CHARS_PER_LINE = 85
-    LINE_H = 12.5
+    LINE_H = 14          # more line spacing
     BODY_START_Y = 650   # lower start to avoid INFORME bar overlap
 
     # ── Header fields in BOLD ──
@@ -303,17 +303,24 @@ def generate_pdf(data, img_paths):
 
         for para in body.split("\n"):
             if para.strip() == "":
-                y -= 7
+                y -= 10
                 continue
 
             stripped = para.strip()
 
             # Detect paragraph type
             is_conclusion_header = stripped.upper().startswith("CONCLUSI")
-            is_organ_header = (stripped.endswith(":") and len(stripped.split(":")[0]) < 30 and stripped.split(":")[0].strip().isupper())
             is_section_header = stripped.isupper() and len(stripped) < 50
             is_conclusion_item = stripped.startswith("*")
             is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
+
+            # Organ detection: line contains "WORD:" where WORD is uppercase at the start
+            is_organ_header = False
+            if ":" in stripped and not is_conclusion_header and not is_section_header:
+                colon_pos = stripped.index(":")
+                before_colon = stripped[:colon_pos].strip()
+                if before_colon.isupper() and len(before_colon) < 35 and colon_pos < 35:
+                    is_organ_header = True
 
             if is_conclusion_header or is_section_header:
                 # CONCLUSIÓN / HALLAZGOS / INDICACIÓN CLÍNICA
@@ -327,13 +334,13 @@ def generate_pdf(data, img_paths):
                 continue
 
             if is_organ_header:
-                # HÍGADO: ... - organ name bold, rest normal
+                # HÍGADO: ... - organ name bold purple, rest normal
                 colon_idx = stripped.index(":")
                 organ_name = stripped[:colon_idx + 1]
                 organ_text = stripped[colon_idx + 1:].strip()
-                y -= 5  # space before organ
+                y -= 10  # more space before each organ
 
-                # Draw organ name in BOLD
+                # Draw organ name in BOLD PURPLE
                 c.setFont("Helvetica-Bold", 11)
                 c.setFillColor(PURPLE)
                 c.drawString(LEFT_X, y, organ_name)
