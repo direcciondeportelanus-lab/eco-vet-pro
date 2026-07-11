@@ -258,8 +258,11 @@ export default function App(){
                 <div className="result-title">PDF generado correctamente</div>
                 <div className="result-sub">{data.mascota||'Informe'} — {data.fecha}</div>
               </div></div>
-              <div className="panel" style={{padding:0,overflow:'hidden'}}>
-                <iframe src={pdfUrl+'#toolbar=1&navpanes=0'} className="pdf-frame" title="PDF" style={{minHeight:600}}/>
+              <div className="panel" style={{textAlign:'center',padding:'24px'}}>
+                <button className="btn btn-glass" style={{marginTop:0,maxWidth:300,margin:'0 auto'}} onClick={()=>window.open(pdfUrl,'_blank')}>
+                  <FileText size={18}/> Ver vista preliminar
+                </button>
+                <p style={{fontSize:12,color:'var(--text-muted)',marginTop:10}}>Se abre en una pestaña nueva</p>
               </div>
               <button className="btn btn-blue" onClick={async()=>{
                 try{await saveReport({...data,transcripcion_original:transcription});setSuccess('Informe guardado en la base de datos')}catch(e:any){setError(e.message)}
