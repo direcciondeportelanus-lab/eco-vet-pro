@@ -122,10 +122,15 @@ INTERPRETACIÓN DEL DICTADO
    → SIEMPRE escribí la CONCLUSIÓN al final. Si la Dra. no la dictó, escribí: "CONCLUSIÓN: (pendiente de completar por la profesional)."
 
 3) CÁLCULOS — Si dice "haceme el cálculo", "calculame", "el volumen de":
-   - Volumen = largo × ancho × alto × 0.523 (SIEMPRE 3 medidas, nunca 4)
-   - Índice de resistividad renal (IR) = (Vmáx - Vmín) / Vmáx
+   REGLAS DE FORMATO PARA NÚMEROS Y MEDIDAS:
+   - CADA número debe llevar su unidad al lado: 3,2 cm × 2,1 cm × 1,2 cm (NO: 3,2 x 2,1 x 1,2 cm)
+   - Si la Dra. dice los valores en mm, cada número lleva mm. Si dice cm, cada uno lleva cm.
+   - Volumen: mostrá solo las 3 medidas con unidad y el resultado. NUNCA muestres el factor 0,523 en el texto.
+     Ejemplo correcto: "Dimensiones de 3,2 cm × 2,1 cm × 1,2 cm. Volumen estimado: 4,22 cm³."
+     Ejemplo INCORRECTO: "3,2 x 2,1 x 1,2 x 0,523 = 4,22 cm³" (NO mostrar el 0,523)
+   - Internamente calculá: largo × ancho × alto × 0,523 = resultado en cm³
+   - Índice de resistividad renal (IR) = (Vmáx - Vmín) / Vmáx. Mostrá valores y resultado.
    - Relación córtico-medular: valor corteza / valor médula
-   Mostrá la fórmula y el resultado en el texto.
 
 4) COMANDOS — Respondé a órdenes directas:
    - "corregí eso" / "cambiá lo último" → corregís la última parte
@@ -147,6 +152,10 @@ FORMATO DEL TEXTO
 - Separar cada organo con una linea en blanco
 - Oraciones completas con puntuacion correcta
 - Tono: profesional, tercera persona ("se observa", "se evidencia", "presenta")
+- FORMATO DE MEDIDAS: cada numero SIEMPRE lleva su unidad al lado.
+  Si dicta en mm: "39 mm × 25 mm" (NO "39 x 25 mm")
+  Si dicta en cm: "3,2 cm × 2,1 cm × 1,2 cm" (NO "3,2 x 2,1 x 1,2 cm")
+  Los numeros con unidades son datos importantes del informe.
 
 CONCLUSION (SIEMPRE al final, debe ser COMPLETA y DETALLADA):
 - Titulo: CONCLUSION
@@ -246,12 +255,12 @@ def generate_pdf(data, img_paths, font_size_option=10):
     font_size = max(8, min(15, font_size_option))
     CHARS_PER_LINE = int(85 * (10 / font_size))
     LINE_H = font_size + 4
-    BODY_START_Y = 635
+    BODY_START_Y = 620
 
     # ── Header fields in BOLD ──
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(PURPLE)
-    fields = {"tutor": (175, 745), "fecha": (445, 745), "mascota": (155, 723), "medico_derivante": (420, 723)}
+    fields = {"tutor": (175, 720), "fecha": (445, 720), "mascota": (155, 698), "medico_derivante": (420, 698)}
     for k, (x, y) in fields.items():
         v = data.get(k, "")
         if v:

@@ -312,8 +312,21 @@ export default function App(){
                 </div>
               </div>
 
-              <button className="btn btn-blue" onClick={makePDF} disabled={processing}>{processing?<><Loader size={16} className="spin"/> Generando...</>:<><FileText size={16}/> Generar PDF</>}</button>
-              <button className="btn btn-orange" onClick={saveDraft}><Save size={16}/> Guardar borrador</button>
+              <button className="btn btn-blue" onClick={async()=>{
+                setProcessing(true);setError('')
+                try{const b=await generatePDF(data,imgFiles,fontSize);const url=URL.createObjectURL(b);setPdfUrl(url);window.open(url,'_blank')}
+                catch(e:any){setError(e.message)}
+                setProcessing(false)
+              }} disabled={processing}>{processing?<><Loader size={16} className="spin"/> Generando...</>:<><FileText size={16}/> Vista preliminar</>}</button>
+              <p style={{fontSize:12,color:'var(--text-muted)',textAlign:'center',marginTop:4}}>Revisá el PDF, ajustá el tamaño de letra si es necesario, y después generá el PDF final</p>
+
+              {pdfUrl&&<>
+                <button className="btn btn-orange" onClick={()=>{
+                  const a=document.createElement('a');a.href=pdfUrl;a.download=`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`;a.click()
+                }}><Download size={16}/> Descargar PDF</button>
+                <button className="btn btn-glass" onClick={sharePDF}><Send size={16}/> Compartir por WhatsApp</button>
+              </>}
+              <button className="btn btn-glass" onClick={saveDraft}><Save size={16}/> Guardar borrador</button>
               <button className="btn btn-ghost" onClick={()=>setStep('record')}><ArrowLeft size={14}/> Volver a dictar</button>
             </>)}
 
@@ -323,19 +336,13 @@ export default function App(){
                 <div className="result-title">PDF generado correctamente</div>
                 <div className="result-sub">{data.mascota||'Informe'} — {data.fecha}</div>
               </div></div>
-              <div className="panel" style={{textAlign:'center',padding:'24px'}}>
-                <button className="btn btn-glass" style={{marginTop:0,maxWidth:300,margin:'0 auto'}} onClick={()=>window.open(pdfUrl,'_blank')}>
-                  <FileText size={18}/> Ver vista preliminar
-                </button>
-                <p style={{fontSize:12,color:'var(--text-muted)',marginTop:10}}>Se abre en una pestaña nueva</p>
-              </div>
               <button className="btn btn-blue" onClick={async()=>{
-                try{await saveReport({...data,transcripcion_original:transcription});setSuccess('Informe guardado en la base de datos')}catch(e:any){setError(e.message)}
+                try{await saveReport({...data,transcripcion_original:transcription});setSuccess('Informe guardado')}catch(e:any){setError(e.message)}
               }}><Save size={16}/> Guardar informe</button>
-              <button className="btn btn-orange" onClick={sharePDF}><Send size={16}/> Compartir por WhatsApp</button>
-              <button className="btn btn-glass" onClick={()=>{
+              <button className="btn btn-orange" onClick={()=>{
                 const a=document.createElement('a');a.href=pdfUrl;a.download=`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`;a.click()
               }}><Download size={16}/> Descargar PDF</button>
+              <button className="btn btn-glass" onClick={sharePDF}><Send size={16}/> Compartir</button>
               <button className="btn btn-glass" onClick={()=>setStep('edit')}><Pencil size={14}/> Seguir editando</button>
               <button className="btn btn-ghost" onClick={startNew}><Plus size={14}/> Nuevo informe</button>
             </>)}
