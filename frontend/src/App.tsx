@@ -23,7 +23,8 @@ export default function App(){
   const [imgFiles,setImgFiles]=useState<File[]>([])
   const [imgPrevs,setImgPrevs]=useState<string[]>([])
   const [fontSize,setFontSize]=useState(10)
-  const [drafts,setDrafts]=useState<any[]>([])  const mediaRec=useRef<MediaRecorder|null>(null)
+  const [drafts,setDrafts]=useState<any[]>([])
+  const mediaRec=useRef<MediaRecorder|null>(null)
   const chunks=useRef<Blob[]>([])
   const fileRef=useRef<HTMLInputElement>(null)
 
