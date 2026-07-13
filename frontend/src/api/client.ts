@@ -50,3 +50,10 @@ export async function getReports() {
     return res.json()
   } catch { return [] }
 }
+
+export async function getEstilo() {
+  try {
+    const res = await fetch(`${API_BASE}/estilo`)
+    return res.json()
+  } catch { return { frases_habituales: [], terminos_preferidos: {}, correcciones_frecuentes: [] } }
+}

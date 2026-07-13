@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports } from './api/client'
+import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo } from './api/client'
 
 type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -25,6 +25,7 @@ export default function App(){
   const [fontSize,setFontSize]=useState(10)
   const [drafts,setDrafts]=useState<any[]>([])
   const [savedReports,setSavedReports]=useState<any[]>([])
+  const [estiloData,setEstiloData]=useState<any>({frases_habituales:[],terminos_preferidos:{},correcciones_frecuentes:[]})
   const mediaRec=useRef<MediaRecorder|null>(null)
   const chunks=useRef<Blob[]>([])
   const fileRef=useRef<HTMLInputElement>(null)
@@ -117,7 +118,7 @@ export default function App(){
           <li className={`sidebar-item ${view==='nuevo'?'active':''}`} onClick={()=>nav('nuevo')}><Plus size={16}/> Nuevo Informe</li>
           <li className={`sidebar-item ${view==='informes'?'active':''}`} onClick={()=>{setView('informes');setSidebarOpen(false);getReports().then(setSavedReports)}}><FileText size={16}/> Mis Informes{(stats.total_informes>0||drafts.length>0)&&<span className="sidebar-badge">{stats.total_informes+drafts.length}</span>}</li>
           <li className="sidebar-item"><FolderOpen size={16}/> Plantillas</li>
-          <li className={`sidebar-item ${view==='biblioteca'?'active':''}`} onClick={()=>{setView('biblioteca');setSidebarOpen(false)}}><Image size={16}/> Biblioteca</li>
+          <li className={`sidebar-item ${view==='biblioteca'?'active':''}`} onClick={()=>{setView('biblioteca');setSidebarOpen(false);getEstilo().then(setEstiloData)}}><Brain size={16}/> Aprendizaje IA</li>
         </ul>
         <div className="sidebar-section">IA & Aprendizaje</div>
         <ul className="sidebar-nav">
@@ -326,6 +327,9 @@ export default function App(){
                   const a=document.createElement('a');a.href=pdfUrl;a.download=`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`;a.click()
                 }}><Download size={16}/> Descargar PDF</button>
                 <button className="btn btn-glass" onClick={sharePDF}><Send size={16}/> Compartir por WhatsApp</button>
+                <button className="btn btn-blue" style={{marginTop:10}} onClick={async()=>{
+                  try{await saveReport({...data,transcripcion_original:transcription});setSuccess('Informe guardado en la base de datos')}catch(e:any){setError(e.message)}
+                }}><Save size={16}/> Guardar informe</button>
               </>}
               <button className="btn btn-glass" onClick={saveDraft}><Save size={16}/> Guardar borrador</button>
               <button className="btn btn-ghost" onClick={()=>setStep('record')}><ArrowLeft size={14}/> Volver a dictar</button>
@@ -414,30 +418,62 @@ export default function App(){
         {view==='biblioteca'&&(
           <div className="page">
             <div style={{marginBottom:24,animation:'fadeUp 0.5s ease'}}>
-              <h2 style={{fontSize:22,fontWeight:700}}>Biblioteca de Imágenes</h2>
-              <p style={{color:'var(--text2)',fontSize:14,marginTop:4}}>Ecografías subidas en los informes</p>
+              <h2 style={{fontSize:22,fontWeight:700}}>Aprendizaje IA</h2>
+              <p style={{color:'var(--text2)',fontSize:14,marginTop:4}}>Patrones extraídos de cada informe. Esta memoria mejora la IA con cada uso.</p>
             </div>
 
-            <div className="panel" style={{animation:'fadeUp 0.6s ease'}}>
-              <div className="panel-head"><span className="panel-title"><Camera size={16} color="#22D3EE"/> Imágenes del informe actual</span></div>
-              <div className="panel-body">
-                {imgPrevs.length===0&&<p style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:20}}>No hay imágenes cargadas. Subí ecografías desde "Nuevo Informe".</p>}
-                {imgPrevs.length>0&&(
-                  <div className="img-grid">{imgPrevs.map((s,i)=>(
-                    <div key={i} className="img-item"><img src={s} className="img-thumb"/></div>
-                  ))}</div>
-                )}
-              </div>
+            <div className="stats-band" style={{animation:'fadeUp 0.6s ease'}}>
+              <div className="stat-item"><div className="stat-value purple">{estiloData.frases_habituales?.length||0}</div><div className="stat-label">Frases aprendidas</div></div>
+              <div className="stat-item"><div className="stat-value blue">{Object.keys(estiloData.terminos_preferidos||{}).length}</div><div className="stat-label">Términos preferidos</div></div>
+              <div className="stat-item"><div className="stat-value cyan">{estiloData.correcciones_frecuentes?.length||0}</div><div className="stat-label">Correcciones</div></div>
             </div>
 
             <div className="panel" style={{animation:'fadeUp 0.7s ease'}}>
-              <div className="panel-head"><span className="panel-title"><Tag size={16} color="#8B5CF6"/> Etiquetado para IA (próximamente)</span></div>
-              <div className="panel-body" style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:20}}>
-                Las imágenes se van a poder etiquetar por órgano y hallazgo para entrenar el modelo de IA.
+              <div className="panel-head"><span className="panel-title"><Sparkles size={16} color="#8B5CF6"/> Frases habituales</span></div>
+              <div className="panel-body">
+                {(estiloData.frases_habituales||[]).length===0&&<p style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:16}}>Todavía no hay frases aprendidas. Se extraen automáticamente de cada informe.</p>}
+                {(estiloData.frases_habituales||[]).map((f:string,i:number)=>(
+                  <div key={i} style={{padding:'8px 12px',background:'var(--glass)',borderRadius:8,marginBottom:6,fontSize:13,color:'var(--text2)',border:'1px solid var(--gb)'}}>"{f}"</div>
+                ))}
               </div>
             </div>
 
-            <button className="btn btn-blue" onClick={startNew}><Plus size={16}/> Nuevo informe</button>
+            <div className="panel" style={{animation:'fadeUp 0.8s ease'}}>
+              <div className="panel-head"><span className="panel-title"><Tag size={16} color="#3B82F6"/> Términos preferidos</span></div>
+              <div className="panel-body">
+                {Object.keys(estiloData.terminos_preferidos||{}).length===0&&<p style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:16}}>Sin términos registrados aún.</p>}
+                {Object.entries(estiloData.terminos_preferidos||{}).map(([k,v]:any,i:number)=>(
+                  <div key={i} style={{display:'flex',gap:10,alignItems:'center',padding:'8px 0',borderBottom:'1px solid var(--gb)',fontSize:13}}>
+                    <span style={{color:'var(--danger)',textDecoration:'line-through'}}>{k}</span>
+                    <span style={{color:'var(--text3)'}}>→</span>
+                    <span style={{color:'var(--success)',fontWeight:600}}>{v}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel" style={{animation:'fadeUp 0.9s ease'}}>
+              <div className="panel-head"><span className="panel-title"><TrendingUp size={16} color="#22D3EE"/> Correcciones frecuentes</span></div>
+              <div className="panel-body">
+                {(estiloData.correcciones_frecuentes||[]).length===0&&<p style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:16}}>Sin correcciones registradas.</p>}
+                {(estiloData.correcciones_frecuentes||[]).map((c:string,i:number)=>(
+                  <div key={i} style={{padding:'8px 12px',background:'var(--glass)',borderRadius:8,marginBottom:6,fontSize:13,color:'var(--text2)',border:'1px solid var(--gb)'}}>{c}</div>
+                ))}
+              </div>
+            </div>
+
+            <div className="panel" style={{animation:'fadeUp 1s ease'}}>
+              <div className="panel-head"><span className="panel-title"><HeartPulse size={16} color="#F97316"/> ¿Cómo funciona?</span></div>
+              <div className="panel-body" style={{color:'var(--text2)',fontSize:13,lineHeight:2}}>
+                Cada vez que dictás un informe, la IA extrae:<br/>
+                • <strong>Frases</strong> que usás frecuentemente<br/>
+                • <strong>Términos</strong> que preferís (ej: "ganglios" → "linfonódulos")<br/>
+                • <strong>Correcciones</strong> que Whisper suele necesitar<br/><br/>
+                Estos patrones se guardan en Supabase y se inyectan en cada nuevo informe para que la IA escriba cada vez más como vos.
+              </div>
+            </div>
+
+            <button className="btn btn-glass" onClick={()=>getEstilo().then(setEstiloData)}><TrendingUp size={16}/> Actualizar datos</button>
           </div>
         )}
       </div>
