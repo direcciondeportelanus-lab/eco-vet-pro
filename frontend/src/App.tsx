@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport } from './api/client'
+import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports } from './api/client'
 
-type View='dashboard'|'nuevo'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
+type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
 
 export default function App(){
@@ -24,6 +24,7 @@ export default function App(){
   const [imgPrevs,setImgPrevs]=useState<string[]>([])
   const [fontSize,setFontSize]=useState(10)
   const [drafts,setDrafts]=useState<any[]>([])
+  const [savedReports,setSavedReports]=useState<any[]>([])
   const mediaRec=useRef<MediaRecorder|null>(null)
   const chunks=useRef<Blob[]>([])
   const fileRef=useRef<HTMLInputElement>(null)
@@ -114,9 +115,9 @@ export default function App(){
         <ul className="sidebar-nav">
           <li className={`sidebar-item ${view==='dashboard'?'active':''}`} onClick={()=>nav('dashboard')}><LayoutDashboard size={16}/> Dashboard</li>
           <li className={`sidebar-item ${view==='nuevo'?'active':''}`} onClick={()=>nav('nuevo')}><Plus size={16}/> Nuevo Informe</li>
-          <li className="sidebar-item"><FileText size={16}/> Mis Informes{stats.total_informes>0&&<span className="sidebar-badge">{stats.total_informes}</span>}</li>
+          <li className={`sidebar-item ${view==='informes'?'active':''}`} onClick={()=>{setView('informes');setSidebarOpen(false);getReports().then(setSavedReports)}}><FileText size={16}/> Mis Informes{(stats.total_informes>0||drafts.length>0)&&<span className="sidebar-badge">{stats.total_informes+drafts.length}</span>}</li>
           <li className="sidebar-item"><FolderOpen size={16}/> Plantillas</li>
-          <li className="sidebar-item"><Image size={16}/> Biblioteca</li>
+          <li className={`sidebar-item ${view==='biblioteca'?'active':''}`} onClick={()=>{setView('biblioteca');setSidebarOpen(false)}}><Image size={16}/> Biblioteca</li>
         </ul>
         <div className="sidebar-section">IA & Aprendizaje</div>
         <ul className="sidebar-nav">
@@ -346,6 +347,97 @@ export default function App(){
               <button className="btn btn-glass" onClick={()=>setStep('edit')}><Pencil size={14}/> Seguir editando</button>
               <button className="btn btn-ghost" onClick={startNew}><Plus size={14}/> Nuevo informe</button>
             </>)}
+          </div>
+        )}
+
+        {/* ══ MIS INFORMES ══ */}
+        {view==='informes'&&(
+          <div className="page">
+            <div style={{marginBottom:24,animation:'fadeUp 0.5s ease'}}>
+              <h2 style={{fontSize:22,fontWeight:700}}>Mis Informes</h2>
+              <p style={{color:'var(--text2)',fontSize:14,marginTop:4}}>Borradores e informes guardados</p>
+            </div>
+
+            {drafts.length>0&&(
+              <div className="panel" style={{animation:'fadeUp 0.6s ease'}}>
+                <div className="panel-head"><span className="panel-title"><Save size={16} color="#F97316"/> Borradores ({drafts.length})</span></div>
+                <div className="panel-body">
+                  {drafts.map((d:any)=>(
+                    <div key={d.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'12px 0',borderBottom:'1px solid var(--gb)'}}>
+                      <div style={{cursor:'pointer',flex:1}} onClick={()=>loadDraft(d)}>
+                        <div style={{fontWeight:600,fontSize:14}}>{d.mascota||'Sin nombre'} <span style={{color:'var(--orange)',fontSize:12}}>● Borrador</span></div>
+                        <div style={{fontSize:12,color:'var(--text-muted)'}}>Tutor: {d.tutor||'—'} | {d.savedAt}</div>
+                        <div style={{fontSize:12,color:'var(--text3)',marginTop:2}}>{(d.cuerpo_informe||'').substring(0,80)}...</div>
+                      </div>
+                      <div style={{display:'flex',gap:8}}>
+                        <button onClick={()=>loadDraft(d)} style={{background:'var(--glass)',border:'1px solid var(--gb)',color:'var(--accent)',cursor:'pointer',padding:'6px 12px',borderRadius:8,fontSize:12,fontWeight:600}}>Abrir</button>
+                        <button onClick={()=>deleteDraft(d.id)} style={{background:'none',border:'none',color:'var(--danger)',cursor:'pointer',padding:8}}><X size={16}/></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="panel" style={{animation:'fadeUp 0.7s ease'}}>
+              <div className="panel-head">
+                <span className="panel-title"><FileText size={16} color="#3B82F6"/> Informes guardados ({savedReports.length})</span>
+                <button onClick={()=>getReports().then(setSavedReports)} style={{background:'var(--glass)',border:'1px solid var(--gb)',color:'var(--text2)',cursor:'pointer',padding:'4px 12px',borderRadius:8,fontSize:12}}>Actualizar</button>
+              </div>
+              <div className="panel-body">
+                {savedReports.length===0&&<p style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:20}}>No hay informes guardados aún. Generá un PDF y tocá "Guardar informe".</p>}
+                {savedReports.map((r:any)=>(
+                  <div key={r.id} style={{padding:'12px 0',borderBottom:'1px solid var(--gb)'}}>
+                    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                      <div style={{cursor:'pointer',flex:1}} onClick={()=>{
+                        setData({tutor:r.tutor||'',fecha:r.fecha||'',mascota:r.mascota||'',medico_derivante:r.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''})
+                        setStep('edit');setView('nuevo')
+                      }}>
+                        <div style={{fontWeight:600,fontSize:14}}>{r.mascota||'Sin nombre'} <span style={{color:'var(--green)',fontSize:12}}>✓ Guardado</span></div>
+                        <div style={{fontSize:12,color:'var(--text-muted)'}}>Tutor: {r.tutor||'—'} | Fecha: {r.fecha||'—'} | {r.created_at?.substring(0,10)||''}</div>
+                      </div>
+                      <button onClick={()=>{
+                        setData({tutor:r.tutor||'',fecha:r.fecha||'',mascota:r.mascota||'',medico_derivante:r.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''})
+                        setStep('edit');setView('nuevo')
+                      }} style={{background:'var(--glass)',border:'1px solid var(--gb)',color:'var(--accent)',cursor:'pointer',padding:'6px 12px',borderRadius:8,fontSize:12,fontWeight:600}}>Abrir</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button className="btn btn-blue" onClick={startNew}><Plus size={16}/> Nuevo informe</button>
+          </div>
+        )}
+
+        {/* ══ BIBLIOTECA ══ */}
+        {view==='biblioteca'&&(
+          <div className="page">
+            <div style={{marginBottom:24,animation:'fadeUp 0.5s ease'}}>
+              <h2 style={{fontSize:22,fontWeight:700}}>Biblioteca de Imágenes</h2>
+              <p style={{color:'var(--text2)',fontSize:14,marginTop:4}}>Ecografías subidas en los informes</p>
+            </div>
+
+            <div className="panel" style={{animation:'fadeUp 0.6s ease'}}>
+              <div className="panel-head"><span className="panel-title"><Camera size={16} color="#22D3EE"/> Imágenes del informe actual</span></div>
+              <div className="panel-body">
+                {imgPrevs.length===0&&<p style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:20}}>No hay imágenes cargadas. Subí ecografías desde "Nuevo Informe".</p>}
+                {imgPrevs.length>0&&(
+                  <div className="img-grid">{imgPrevs.map((s,i)=>(
+                    <div key={i} className="img-item"><img src={s} className="img-thumb"/></div>
+                  ))}</div>
+                )}
+              </div>
+            </div>
+
+            <div className="panel" style={{animation:'fadeUp 0.7s ease'}}>
+              <div className="panel-head"><span className="panel-title"><Tag size={16} color="#8B5CF6"/> Etiquetado para IA (próximamente)</span></div>
+              <div className="panel-body" style={{color:'var(--text3)',fontSize:14,textAlign:'center',padding:20}}>
+                Las imágenes se van a poder etiquetar por órgano y hallazgo para entrenar el modelo de IA.
+              </div>
+            </div>
+
+            <button className="btn btn-blue" onClick={startNew}><Plus size={16}/> Nuevo informe</button>
           </div>
         )}
       </div>
