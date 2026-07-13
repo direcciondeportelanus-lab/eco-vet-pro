@@ -19,9 +19,10 @@ export async function structureReport(transcription: string, provider: string, a
   return res.json()
 }
 
-export async function generatePDF(data: Record<string, string>, images: File[]) {
+export async function generatePDF(data: Record<string, string>, images: File[], fontSize: number = 10) {
   const form = new FormData()
   Object.entries(data).forEach(([k, v]) => form.append(k, v))
+  form.append('font_size', fontSize.toString())
   images.forEach(img => form.append('images', img))
   const res = await fetch(`${API_BASE}/generate-pdf`, { method: 'POST', body: form })
   if (!res.ok) throw new Error('Error al generar PDF')

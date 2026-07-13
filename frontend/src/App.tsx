@@ -22,11 +22,38 @@ export default function App(){
   const [data,setData]=useState<Report>({tutor:'',fecha:new Date().toLocaleDateString('es-AR'),mascota:'',medico_derivante:'',cuerpo_informe:''})
   const [imgFiles,setImgFiles]=useState<File[]>([])
   const [imgPrevs,setImgPrevs]=useState<string[]>([])
-  const mediaRec=useRef<MediaRecorder|null>(null)
+  const [fontSize,setFontSize]=useState(10)
+  const [drafts,setDrafts]=useState<any[]>([])  const mediaRec=useRef<MediaRecorder|null>(null)
   const chunks=useRef<Blob[]>([])
   const fileRef=useRef<HTMLInputElement>(null)
 
   useEffect(()=>{getStats().then(setStats).catch(()=>{})},[view,step])
+  useEffect(()=>{
+    try{const d=JSON.parse(localStorage.getItem('eco_drafts')||'[]');setDrafts(d)}catch{}
+  },[])
+
+  const saveDraft=()=>{
+    const draft={id:Date.now(),fecha:data.fecha,tutor:data.tutor,mascota:data.mascota,
+      medico_derivante:data.medico_derivante,cuerpo_informe:data.cuerpo_informe,
+      transcription,fontSize,savedAt:new Date().toLocaleString('es-AR')}
+    const updated=[draft,...drafts.filter((d:any)=>d.id!==draft.id)].slice(0,20)
+    setDrafts(updated);localStorage.setItem('eco_drafts',JSON.stringify(updated))
+    setSuccess('Borrador guardado')
+  }
+
+  const loadDraft=(draft:any)=>{
+    setData({tutor:draft.tutor||'',fecha:draft.fecha||'',mascota:draft.mascota||'',
+      medico_derivante:draft.medico_derivante||'',cuerpo_informe:draft.cuerpo_informe||''})
+    setTranscription(draft.transcription||'')
+    if(draft.fontSize)setFontSize(draft.fontSize)
+    setStep('edit');setView('nuevo');setSidebarOpen(false)
+    setSuccess('Borrador cargado')
+  }
+
+  const deleteDraft=(id:number)=>{
+    const updated=drafts.filter((d:any)=>d.id!==id)
+    setDrafts(updated);localStorage.setItem('eco_drafts',JSON.stringify(updated))
+  }
 
   const startRec=async()=>{
     if(!apiKey){setShowConfig(true);return}
@@ -64,7 +91,7 @@ export default function App(){
   }
   const addImgs=(e:React.ChangeEvent<HTMLInputElement>)=>{Array.from(e.target.files||[]).forEach(f=>{setImgFiles(p=>[...p,f]);const r=new FileReader();r.onload=ev=>setImgPrevs(p=>[...p,ev.target?.result as string]);r.readAsDataURL(f)});e.target.value=''}
   const delImg=(i:number)=>{setImgFiles(p=>p.filter((_,j)=>j!==i));setImgPrevs(p=>p.filter((_,j)=>j!==i))}
-  const makePDF=async()=>{setProcessing(true);setError('');try{const b=await generatePDF(data,imgFiles);setPdfUrl(URL.createObjectURL(b));setStep('done')}catch(e:any){setError(e.message)};setProcessing(false)}
+  const makePDF=async()=>{setProcessing(true);setError('');try{const b=await generatePDF(data,imgFiles,fontSize);setPdfUrl(URL.createObjectURL(b));setStep('done')}catch(e:any){setError(e.message)};setProcessing(false)}
   const sharePDF=async()=>{if(!pdfUrl)return;const b=await(await fetch(pdfUrl)).blob();const f=new File([b],`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`,{type:'application/pdf'});if(navigator.share?.({files:[f]}))await navigator.share({files:[f]});else{const a=document.createElement('a');a.href=pdfUrl;a.download=f.name;a.click()}}
   const reset=()=>{setStep('record');setTranscription('');setImgFiles([]);setImgPrevs([]);setPdfUrl(null);setError('');setSuccess('');setPhase('idle');setData({tutor:'',fecha:new Date().toLocaleDateString('es-AR'),mascota:'',medico_derivante:'',cuerpo_informe:''})}
   const startNew=()=>{reset();setView('nuevo');setSidebarOpen(false)}
@@ -177,6 +204,25 @@ export default function App(){
                 </div>
               </div>
             </div>
+
+            {drafts.length>0&&(
+              <div className="panel" style={{animation:'fadeUp 1s ease'}}>
+                <div className="panel-head"><span className="panel-title"><Save size={16} color="#F97316"/> Borradores guardados</span></div>
+                <div className="panel-body">
+                  {drafts.map((d:any)=>(
+                    <div key={d.id} style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'10px 0',borderBottom:'1px solid var(--gb)'}}>
+                      <div style={{cursor:'pointer',flex:1}} onClick={()=>loadDraft(d)}>
+                        <div style={{fontWeight:600,fontSize:14}}>{d.mascota||'Sin nombre'}</div>
+                        <div style={{fontSize:12,color:'var(--text-muted)'}}>{d.tutor} — {d.savedAt}</div>
+                      </div>
+                      <button onClick={()=>deleteDraft(d.id)} style={{background:'none',border:'none',color:'var(--danger)',cursor:'pointer',padding:8}}>
+                        <X size={16}/>
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -241,14 +287,32 @@ export default function App(){
                 <div className="panel-body"><textarea className="form-input" style={{minHeight:320}} value={data.cuerpo_informe} onChange={e=>u('cuerpo_informe',e.target.value)}/></div>
               </div>
               <div className="panel">
-                <div className="panel-head"><span className="panel-title"><Camera size={16}/> Ecografías</span></div>
+                <div className="panel-head"><span className="panel-title"><Camera size={16}/> Ecografías (hasta 18)</span></div>
                 <div className="panel-body">
                   <input ref={fileRef} type="file" accept="image/*" multiple onChange={addImgs} style={{display:'none'}}/>
                   <button className="btn btn-glass" style={{marginTop:0}} onClick={()=>fileRef.current?.click()}><Image size={16}/> Seleccionar imágenes</button>
-                  {imgPrevs.length>0&&<div className="img-grid">{imgPrevs.map((s,i)=>(<div key={i} className="img-item"><img src={s} className="img-thumb"/><button className="img-del" onClick={()=>delImg(i)}>✕</button></div>))}</div>}
+                  {imgPrevs.length>0&&<>
+                    <div className="img-grid">{imgPrevs.map((s,i)=>(<div key={i} className="img-item"><img src={s} className="img-thumb"/><button className="img-del" onClick={()=>delImg(i)}>✕</button></div>))}</div>
+                    <p style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>{imgPrevs.length} imagen(es) — 9 por página, grilla 3×3</p>
+                  </>}
                 </div>
               </div>
+
+              <div className="panel">
+                <div className="panel-head"><span className="panel-title"><Settings size={16}/> Tamaño de letra</span></div>
+                <div className="panel-body" style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
+                  {[9,10,11,12,13,14].map(s=>(
+                    <button key={s} onClick={()=>setFontSize(s)} className={`btn ${fontSize===s?'btn-blue':'btn-glass'}`}
+                      style={{width:'auto',padding:'8px 16px',flex:'none',fontSize:s}}>{s}pt</button>
+                  ))}
+                  <p style={{fontSize:12,color:'var(--text-muted)',width:'100%',marginTop:4}}>
+                    Informe corto → letra más grande. Informe largo → letra más chica.
+                  </p>
+                </div>
+              </div>
+
               <button className="btn btn-blue" onClick={makePDF} disabled={processing}>{processing?<><Loader size={16} className="spin"/> Generando...</>:<><FileText size={16}/> Generar PDF</>}</button>
+              <button className="btn btn-orange" onClick={saveDraft}><Save size={16}/> Guardar borrador</button>
               <button className="btn btn-ghost" onClick={()=>setStep('record')}><ArrowLeft size={14}/> Volver a dictar</button>
             </>)}
 

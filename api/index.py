@@ -135,7 +135,8 @@ INTERPRETACIÓN DEL DICTADO
 ═══════════════════════════════
 FORMATO DEL TEXTO
 ===============================
-- Primer bloque: datos del paciente (Paciente, Especie, Sexo, Edad)
+- PRIMERA LINEA SIEMPRE: "Paciente: [nombre], especie [especie], [sexo], [edad]."
+- Si la Dra. hace una introduccion o resena antes de los organos, ponerla como segundo parrafo.
 - Luego INDICACION CLINICA si fue dictada
 - Cada organo: nombre en MAYUSCULAS seguido de dos puntos
 - ORDEN DE ORGANOS (respetar siempre este orden):
@@ -147,11 +148,15 @@ FORMATO DEL TEXTO
 - Oraciones completas con puntuacion correcta
 - Tono: profesional, tercera persona ("se observa", "se evidencia", "presenta")
 
-CONCLUSION (SIEMPRE al final):
+CONCLUSION (SIEMPRE al final, debe ser COMPLETA y DETALLADA):
 - Titulo: CONCLUSION
-- Cada hallazgo patologico en una linea separada precedido por *
-- Al final agrupar organos normales: "* Organo1, organo2... sin particularidades ecograficas significativas."
-- Despues de la conclusion: "Informe realizado por:\\nM.V. Raffo Silvina"
+- Enumerar TODOS los hallazgos patologicos encontrados, cada uno precedido por *
+- Incluir grado de severidad cuando corresponda (leve, moderado, severo)
+- Incluir localizacion cuando corresponda
+- Mencionar hallazgos secundarios relevantes
+- Al final: "* Organos sin particularidades: [listar organos normales] sin particularidades ecograficas significativas."
+- Cerrar con: "Informe realizado por:\\nM.V. Raffo Silvina"
+- La conclusion NO debe ser un resumen breve. Debe ser un listado completo de todos los hallazgos para que el medico derivante tenga claridad.
 
 EJEMPLO DE ORGANO NORMAL:
 "PERITONEO: Sin particularidades ecograficas evidentes."
@@ -162,8 +167,8 @@ EJEMPLO DE ORGANO CON HALLAZGO:
 EJEMPLO DE RINONES:
 "RINONES: * Rinon izquierdo: 41 x 25 mm. * Rinon derecho: 45 x 24 mm. Ambos conservan caracteristicas ecograficas normales."
 
-EJEMPLO DE CONCLUSION:
-"CONCLUSION\\n* Hepatopatia inflamatoria aguda con hepatomegalia moderada.\\n* Escasa cantidad de barro biliar.\\n* Rinones, vejiga, glandulas adrenales, pancreas, estomago, intestinos, bazo, peritoneo y linfonodulos sin particularidades ecograficas significativas.\\n\\nInforme realizado por:\\nM.V. Raffo Silvina"
+EJEMPLO DE CONCLUSION COMPLETA:
+"CONCLUSION\\n* Hepatopatia inflamatoria aguda con hepatomegalia moderada a severa.\\n* Colestasis con barro biliar y paredes engrosadas, hallazgos sugestivos de colecistitis aguda.\\n* Nefropatia cronica difusa de probable origen inflamatorio en grado leve a moderado.\\n* Gastritis aguda con paredes engrosadas.\\n* Enteritis aguda en intestino delgado.\\n* Linfadenopatia mesenterica reactiva / infiltrativa difusa.\\n* Sedimento celular vesical.\\n* Organos sin particularidades: bazo, pancreas, intestino grueso y peritoneo sin particularidades ecograficas significativas.\\n\\nInforme realizado por:\\nM.V. Raffo Silvina"
 
 ===============================
 RESPUESTA
@@ -215,7 +220,7 @@ async def call_llm(provider, api_key, text, style):
                 "cuerpo_informe": content, "estilo_detectado": {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}}
 
 # ── PDF ──
-def generate_pdf(data, img_paths):
+def generate_pdf(data, img_paths, font_size_option=10):
     import re
     from pypdf import PdfReader, PdfWriter
     from reportlab.lib.pagesizes import A4
@@ -235,20 +240,26 @@ def generate_pdf(data, img_paths):
     BLACK = Color(0.08, 0.08, 0.08)
 
     # ── Layout constants ──
-    LEFT_X = 75          # wider: closer to left edge
-    RIGHT_X = 540        # wider: closer to right edge
-    TEXT_W = RIGHT_X - LEFT_X  # ~465pt usable width
-    CHARS_PER_LINE = 85
-    LINE_H = 14          # more line spacing
-    BODY_START_Y = 650   # lower start to avoid INFORME bar overlap
+    LEFT_X = 75
+    RIGHT_X = 540
+    TEXT_W = RIGHT_X - LEFT_X
+    font_size = max(8, min(15, font_size_option))
+    CHARS_PER_LINE = int(85 * (10 / font_size))
+    LINE_H = font_size + 4
+    BODY_START_Y = 635
 
     # ── Header fields in BOLD ──
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(PURPLE)
-    fields = {"tutor": (175, 745), "fecha": (445, 745), "mascota": (155, 723), "medico_derivante": (325, 723)}
+    fields = {"tutor": (175, 745), "fecha": (445, 745), "mascota": (155, 723), "medico_derivante": (420, 723)}
     for k, (x, y) in fields.items():
         v = data.get(k, "")
         if v:
+            # Reduce font if text is too long for the space
+            fsize = 11
+            if k == "medico_derivante" and len(v) > 20:
+                fsize = 9
+            c.setFont("Helvetica-Bold", fsize)
             c.drawString(x, y, v)
 
     # ── Helper: detect if line has measurements to bold+italic ──
@@ -301,7 +312,7 @@ def generate_pdf(data, img_paths):
     current_buf = buf1
     page_num = 1
     BOTTOM_MARGIN = 70
-    CONTINUATION_TOP = 690  # where text starts on continuation pages
+    CONTINUATION_TOP = 740  # page 2 template has more space (no header fields/INFORME bar)
 
     def new_page():
         """Finish current overlay and start a new one for continuation."""
@@ -427,35 +438,68 @@ def generate_pdf(data, img_paths):
     current_buf.seek(0)
     overlay_buffers.append(current_buf)
 
-    # ── Merge overlays with template pages ──
+    # ══════════════════════════════════════════════
+    # PAGE ASSEMBLY — 3-page template logic:
+    # Template page 0 = Page 1 (header fields + INFORME + text)
+    # Template page 1 = Page 2 (continuation text, no header fields)
+    # Template page 2 = Page 3 (IMÁGENES, 3x3 grid)
+    # ══════════════════════════════════════════════
+
+    # ── Text pages ──
     for i, obuf in enumerate(overlay_buffers):
         if i == 0:
-            # First page uses page 1 of template
-            pg = template.pages[0]
+            pg = template.pages[0]  # Page 1 with header fields
         else:
-            # Continuation pages also use page 1 template (same header/footer)
+            # Continuation pages use page 2 template (no header fields)
             template_copy = PdfReader(str(TEMPLATE_PATH))
-            pg = template_copy.pages[0]
+            pg = template_copy.pages[1] if len(template_copy.pages) > 1 else template_copy.pages[0]
         pg.merge_page(PdfReader(obuf).pages[0])
         writer.add_page(pg)
 
-    if img_paths and len(template.pages) > 1:
-        buf2 = io.BytesIO()
-        c2 = canvas.Canvas(buf2, pagesize=A4)
-        positions = [(115, 502), (345, 502), (115, 332), (345, 332), (115, 162), (345, 162)]
-        for i, p in enumerate(img_paths[:6]):
-            try:
-                x, y = positions[i]
-                c2.drawImage(ImageReader(p), x, y, width=200, height=150, preserveAspectRatio=True)
-            except Exception as e:
-                print(f"Img error {i}: {e}")
-        c2.save()
-        buf2.seek(0)
-        page2 = template.pages[1]
-        page2.merge_page(PdfReader(buf2).pages[0])
-        writer.add_page(page2)
-    elif len(template.pages) > 1:
-        writer.add_page(template.pages[1])
+    # ── Image pages (page 3 template, 3x3 grid, up to 18 images) ──
+    if img_paths and len(template.pages) > 2:
+        IMGS_PER_PAGE = 9
+        IMG_W = 145
+        IMG_H = 175
+        GAP_X = 10
+        GAP_Y = 10
+        GRID_LEFT = 80
+        GRID_TOP = 680  # below IMÁGENES bar
+
+        # Calculate 3x3 positions
+        def get_positions():
+            positions = []
+            for row in range(3):
+                for col in range(3):
+                    x = GRID_LEFT + col * (IMG_W + GAP_X)
+                    y = GRID_TOP - (row + 1) * (IMG_H + GAP_Y) + GAP_Y
+                    positions.append((x, y))
+            return positions
+
+        positions = get_positions()
+
+        # Split images into pages of 9
+        for page_start in range(0, len(img_paths), IMGS_PER_PAGE):
+            page_images = img_paths[page_start:page_start + IMGS_PER_PAGE]
+
+            img_buf = io.BytesIO()
+            ci = canvas.Canvas(img_buf, pagesize=A4)
+
+            for idx, p in enumerate(page_images):
+                try:
+                    x, y = positions[idx]
+                    ci.drawImage(ImageReader(p), x, y, width=IMG_W, height=IMG_H, preserveAspectRatio=True)
+                except Exception as e:
+                    print(f"Img error {idx}: {e}")
+
+            ci.save()
+            img_buf.seek(0)
+
+            # Use page 3 template for each image page
+            template_copy = PdfReader(str(TEMPLATE_PATH))
+            img_page = template_copy.pages[2]
+            img_page.merge_page(PdfReader(img_buf).pages[0])
+            writer.add_page(img_page)
 
     out = io.BytesIO()
     writer.write(out)
@@ -492,6 +536,7 @@ async def api_structure(req: StructureReq):
 @app.post("/api/generate-pdf")
 async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
                   medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
+                  font_size: int = Form(10),
                   images: list[UploadFile] = File(default=[])):
     if not TEMPLATE_PATH.exists():
         raise HTTPException(500, "Plantilla no encontrada")
@@ -502,7 +547,7 @@ async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = F
         img_paths.append(str(p))
 
     pdf = generate_pdf({"tutor": tutor, "fecha": fecha, "mascota": mascota,
-                        "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe}, img_paths)
+                        "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe}, img_paths, font_size)
 
     for p in img_paths:
         try: os.unlink(p)
