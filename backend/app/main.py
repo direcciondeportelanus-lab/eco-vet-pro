@@ -253,7 +253,7 @@ def generate_pdf(data, img_paths, font_size_option=10):
     BLACK = Color(0.08, 0.08, 0.08)
 
     # ── Layout constants ──
-    LEFT_X = 60
+    LEFT_X = 55
     RIGHT_X = 540
     TEXT_W = RIGHT_X - LEFT_X
     font_size = max(8, min(15, font_size_option))
@@ -264,7 +264,7 @@ def generate_pdf(data, img_paths, font_size_option=10):
     # ── Header fields in BOLD ──
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(PURPLE)
-    fields = {"tutor": (175, 727), "fecha": (445, 727), "mascota": (155, 705), "medico_derivante": (395, 705)}
+    fields = {"tutor": (175, 727), "fecha": (445, 727), "mascota": (155, 705), "medico_derivante": (385, 705)}
     for k, (x, y) in fields.items():
         v = data.get(k, "")
         if v:
