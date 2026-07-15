@@ -253,7 +253,7 @@ def generate_pdf(data, img_paths, font_size_option=10):
     BLACK = Color(0.08, 0.08, 0.08)
 
     # ── Layout constants ──
-    LEFT_X = 75
+    LEFT_X = 60
     RIGHT_X = 540
     TEXT_W = RIGHT_X - LEFT_X
     font_size = max(8, min(15, font_size_option))
@@ -264,7 +264,7 @@ def generate_pdf(data, img_paths, font_size_option=10):
     # ── Header fields in BOLD ──
     c.setFont("Helvetica-Bold", 11)
     c.setFillColor(PURPLE)
-    fields = {"tutor": (175, 727), "fecha": (445, 727), "mascota": (155, 705), "medico_derivante": (420, 705)}
+    fields = {"tutor": (175, 727), "fecha": (445, 727), "mascota": (155, 705), "medico_derivante": (395, 705)}
     for k, (x, y) in fields.items():
         v = data.get(k, "")
         if v:
@@ -325,7 +325,7 @@ def generate_pdf(data, img_paths, font_size_option=10):
     current_buf = buf1
     page_num = 1
     BOTTOM_MARGIN = 70
-    CONTINUATION_TOP = 740  # page 2 template has more space (no header fields/INFORME bar)
+    CONTINUATION_TOP = 698  # page 2 template has more space (no header fields/INFORME bar)
 
     def new_page():
         """Finish current overlay and start a new one for continuation."""
