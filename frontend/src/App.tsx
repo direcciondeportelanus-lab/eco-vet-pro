@@ -63,15 +63,26 @@ export default function App(){
     setError('');setSuccess('')
     try{
       const stream=await navigator.mediaDevices.getUserMedia({audio:true})
-      const rec=new MediaRecorder(stream,{mimeType:'audio/webm;codecs=opus'})
+      // Detect supported audio format (iOS Safari doesn't support webm)
+      let mimeType='audio/webm;codecs=opus'
+      if(!MediaRecorder.isTypeSupported(mimeType)){
+        mimeType='audio/mp4'
+        if(!MediaRecorder.isTypeSupported(mimeType)){
+          mimeType='audio/wav'
+          if(!MediaRecorder.isTypeSupported(mimeType)) mimeType=''
+        }
+      }
+      const rec=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream)
+      const actualMime=rec.mimeType||mimeType||'audio/webm'
       chunks.current=[]
       rec.ondataavailable=e=>{if(e.data.size>0)chunks.current.push(e.data)}
       rec.onstop=async()=>{
         stream.getTracks().forEach(t=>t.stop())
-        const blob=new Blob(chunks.current,{type:'audio/webm'})
+        const blob=new Blob(chunks.current,{type:actualMime})
         setPhase('transcribing')
         try{
           const text=await whisperTranscribe(blob,provider,apiKey)
+          if(!text||text.trim().length<3){setError('No se detectó audio. Intentá de nuevo.');setPhase('idle');return}
           setTranscription(p=>p?p+' '+text:text)
           setPhase('structuring')
           const full=transcription?transcription+' '+text:text

@@ -196,10 +196,14 @@ async def transcribe_audio(provider, api_key, audio_bytes, filename):
     cfg = PROVIDERS.get(provider)
     if not cfg:
         raise HTTPException(400, "Proveedor no soportado")
+    # Detect mime type from filename extension
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'webm'
+    mime_map = {'mp4': 'audio/mp4', 'wav': 'audio/wav', 'webm': 'audio/webm', 'm4a': 'audio/mp4', 'ogg': 'audio/ogg'}
+    mime = mime_map.get(ext, 'audio/webm')
     async with httpx.AsyncClient(timeout=60.0) as c:
         r = await c.post(cfg["whisper_url"],
             headers={"Authorization": f"Bearer {api_key}"},
-            files={"file": (filename, audio_bytes, "audio/webm")},
+            files={"file": (filename, audio_bytes, mime)},
             data={"model": cfg["whisper_model"], "language": "es"})
     if r.status_code != 200:
         raise HTTPException(r.status_code, f"Whisper error: {r.text}")

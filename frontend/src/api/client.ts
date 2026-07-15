@@ -2,11 +2,13 @@ const API_BASE = import.meta.env.VITE_API_URL || '/api'
 
 export async function whisperTranscribe(audioBlob: Blob, provider: string, apiKey: string): Promise<string> {
   const form = new FormData()
-  form.append('audio', audioBlob, 'audio.webm')
+  // Detect extension from mime type
+  const ext = audioBlob.type.includes('mp4') ? 'mp4' : audioBlob.type.includes('wav') ? 'wav' : 'webm'
+  form.append('audio', audioBlob, `audio.${ext}`)
   form.append('provider', provider)
   form.append('api_key', apiKey)
   const res = await fetch(`${API_BASE}/whisper`, { method: 'POST', body: form })
-  if (!res.ok) { const e = await res.json(); throw new Error(e.detail || 'Error Whisper') }
+  if (!res.ok) { const e = await res.json().catch(()=>({detail:'Error de transcripción'})); throw new Error(e.detail || 'Error Whisper') }
   return (await res.json()).text
 }
 
