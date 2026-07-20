@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo } from './api/client'
+import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo, processAllReports } from './api/client'
 
 type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -506,7 +506,16 @@ export default function App(){
               </div>
             </div>
 
-            <button className="btn btn-glass" onClick={()=>getEstilo().then(setEstiloData)}><TrendingUp size={16}/> Actualizar datos</button>
+            <button className="btn btn-blue" onClick={async()=>{
+              setProcessing(true);setError('');setSuccess('')
+              try{
+                const r=await processAllReports()
+                setSuccess(`${r.processed} informes procesados, ${r.patterns} patrones extraídos`)
+                getEstilo().then(setEstiloData)
+              }catch(e:any){setError(e.message)}
+              setProcessing(false)
+            }} disabled={processing}>{processing?<><Loader size={16} className="spin"/> Procesando...</>:<><TrendingUp size={16}/> Procesar todos los informes</>}</button>
+            <button className="btn btn-glass" onClick={()=>getEstilo().then(setEstiloData)}><Search size={16}/> Actualizar vista</button>
           </div>
         )}
       </div>

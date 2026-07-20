@@ -61,3 +61,9 @@ export async function getEstilo() {
     return res.json()
   } catch { return { frases_habituales: [], terminos_preferidos: {}, correcciones_frecuentes: [] } }
 }
+
+export async function processAllReports() {
+  const res = await fetch(`${API_BASE}/process-all-reports`, { method: 'POST' })
+  if (!res.ok) throw new Error('Error al procesar informes')
+  return res.json()
+}

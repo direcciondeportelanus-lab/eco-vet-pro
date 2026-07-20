@@ -692,3 +692,29 @@ async def list_informes():
 @app.get("/api/estilo")
 async def get_estilo():
     return await load_style()
+
+@app.post("/api/process-all-reports")
+async def process_all_reports():
+    """Fetch all saved reports, extract patterns from each, save to estilo table."""
+    if not SUPABASE_URL:
+        return {"processed": 0, "patterns": 0}
+
+    informes = await supa_get("informes", "select=id,cuerpo_informe&order=created_at.desc&limit=100")
+    if not isinstance(informes, list):
+        return {"processed": 0, "patterns": 0}
+
+    total_patterns = 0
+    processed = 0
+
+    for informe in informes:
+        texto = informe.get("cuerpo_informe", "")
+        if not texto or len(texto) < 50:
+            continue
+
+        patterns = extract_patterns_from_report(texto)
+        if patterns:
+            await save_patterns(patterns)
+            total_patterns += len(patterns.get("frases_nuevas", []))
+            processed += 1
+
+    return {"processed": processed, "patterns": total_patterns}
