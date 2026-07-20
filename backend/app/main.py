@@ -192,22 +192,47 @@ PROVIDERS = {
                "whisper_url": "https://api.openai.com/v1/audio/transcriptions", "whisper_model": "whisper-1"},
 }
 
+GLOSARIO_PATH = BASE_DIR / "data" / "glosario_veterinario.json"
+
+def load_glosario():
+    if GLOSARIO_PATH.exists():
+        return json.loads(GLOSARIO_PATH.read_text(encoding="utf-8"))
+    return {"whisper_prompt": "", "correcciones_whisper": {}}
+
+def corregir_transcripcion(texto):
+    """Post-procesamiento: corrige errores comunes de Whisper usando el glosario completo."""
+    glosario = load_glosario()
+    correcciones = glosario.get("correcciones_whisper", {})
+    resultado = texto
+    # Sort by length descending so multi-word corrections match first
+    for error, correccion in sorted(correcciones.items(), key=lambda x: len(x[0]), reverse=True):
+        import re as _re
+        # Case-insensitive replacement, preserving sentence position
+        pattern = _re.compile(_re.escape(error), _re.IGNORECASE)
+        resultado = pattern.sub(correccion, resultado)
+    return resultado
+
 async def transcribe_audio(provider, api_key, audio_bytes, filename):
     cfg = PROVIDERS.get(provider)
     if not cfg:
         raise HTTPException(400, "Proveedor no soportado")
-    # Detect mime type from filename extension
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'webm'
     mime_map = {'mp4': 'audio/mp4', 'wav': 'audio/wav', 'webm': 'audio/webm', 'm4a': 'audio/mp4', 'ogg': 'audio/ogg'}
     mime = mime_map.get(ext, 'audio/webm')
+    # Load whisper prompt from glossary
+    glosario = load_glosario()
+    whisper_prompt = glosario.get("whisper_prompt", "")
     async with httpx.AsyncClient(timeout=60.0) as c:
         r = await c.post(cfg["whisper_url"],
             headers={"Authorization": f"Bearer {api_key}"},
             files={"file": (filename, audio_bytes, mime)},
-            data={"model": cfg["whisper_model"], "language": "es"})
+            data={"model": cfg["whisper_model"], "language": "es", "prompt": whisper_prompt})
     if r.status_code != 200:
         raise HTTPException(r.status_code, f"Whisper error: {r.text}")
-    return r.json().get("text", "")
+    raw_text = r.json().get("text", "")
+    # Post-process: correct common Whisper errors
+    corrected = corregir_transcripcion(raw_text)
+    return corrected
 
 async def call_llm(provider, api_key, text, style):
     cfg = PROVIDERS.get(provider)
