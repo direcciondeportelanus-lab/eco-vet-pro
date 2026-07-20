@@ -23,6 +23,8 @@ export default function App(){
   const [imgFiles,setImgFiles]=useState<File[]>([])
   const [imgPrevs,setImgPrevs]=useState<string[]>([])
   const [fontSize,setFontSize]=useState(10)
+  const [marginLevel,setMarginLevel]=useState(0)
+  const [lineSpacing,setLineSpacing]=useState(1)
   const [drafts,setDrafts]=useState<any[]>([])
   const [savedReports,setSavedReports]=useState<any[]>([])
   const [estiloData,setEstiloData]=useState<any>({frases_habituales:[],terminos_preferidos:{},correcciones_frecuentes:[]})
@@ -313,21 +315,41 @@ export default function App(){
               </div>
 
               <div className="panel">
-                <div className="panel-head"><span className="panel-title"><Settings size={16}/> Tamaño de letra</span></div>
-                <div className="panel-body" style={{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}}>
-                  {[9,10,11,12,13,14].map(s=>(
-                    <button key={s} onClick={()=>setFontSize(s)} className={`btn ${fontSize===s?'btn-blue':'btn-glass'}`}
-                      style={{width:'auto',padding:'8px 16px',flex:'none',fontSize:s}}>{s}pt</button>
-                  ))}
-                  <p style={{fontSize:12,color:'var(--text-muted)',width:'100%',marginTop:4}}>
-                    Informe corto → letra más grande. Informe largo → letra más chica.
-                  </p>
+                <div className="panel-head"><span className="panel-title"><Settings size={16}/> Formato del PDF</span></div>
+                <div className="panel-body">
+                  <div style={{marginBottom:16}}>
+                    <label className="field-label">Tamaño de letra</label>
+                    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                      {[8,9,10,11,12,13,14].map(s=>(
+                        <button key={s} onClick={()=>setFontSize(s)} className={`btn ${fontSize===s?'btn-blue':'btn-glass'}`}
+                          style={{width:'auto',padding:'6px 14px',flex:'none',fontSize:Math.min(s,12)}}>{s}pt</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{marginBottom:16}}>
+                    <label className="field-label">Margen izquierdo</label>
+                    <div style={{display:'flex',gap:8}}>
+                      {[{v:0,l:'Normal'},{v:1,l:'-1 tab'},{v:2,l:'-2 tabs'}].map(m=>(
+                        <button key={m.v} onClick={()=>setMarginLevel(m.v)} className={`btn ${marginLevel===m.v?'btn-blue':'btn-glass'}`}
+                          style={{width:'auto',padding:'6px 14px',flex:'none'}}>{m.l}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="field-label">Interlineado</label>
+                    <div style={{display:'flex',gap:8}}>
+                      {[{v:1,l:'Con interlineado'},{v:0,l:'Sin interlineado'}].map(s=>(
+                        <button key={s.v} onClick={()=>setLineSpacing(s.v)} className={`btn ${lineSpacing===s.v?'btn-blue':'btn-glass'}`}
+                          style={{width:'auto',padding:'6px 14px',flex:'none'}}>{s.l}</button>
+                      ))}
+                    </div>
+                  </div>
                 </div>
               </div>
 
               <button className="btn btn-blue" onClick={async()=>{
                 setProcessing(true);setError('')
-                try{const b=await generatePDF(data,imgFiles,fontSize);const url=URL.createObjectURL(b);setPdfUrl(url);window.open(url,'_blank')}
+                try{const b=await generatePDF(data,imgFiles,fontSize,marginLevel,lineSpacing);const url=URL.createObjectURL(b);setPdfUrl(url);window.open(url,'_blank')}
                 catch(e:any){setError(e.message)}
                 setProcessing(false)
               }} disabled={processing}>{processing?<><Loader size={16} className="spin"/> Generando...</>:<><FileText size={16}/> Vista preliminar</>}</button>

@@ -233,7 +233,7 @@ async def call_llm(provider, api_key, text, style):
                 "cuerpo_informe": content, "estilo_detectado": {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}}
 
 # ── PDF ──
-def generate_pdf(data, img_paths, font_size_option=10):
+def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spacing=1):
     import re
     from pypdf import PdfReader, PdfWriter
     from reportlab.lib.pagesizes import A4
@@ -253,12 +253,12 @@ def generate_pdf(data, img_paths, font_size_option=10):
     BLACK = Color(0.08, 0.08, 0.08)
 
     # ── Layout constants ──
-    LEFT_X = 55
+    LEFT_X = 55 - (margin_level * 15)  # 0=55, 1=40, 2=25
     RIGHT_X = 540
     TEXT_W = RIGHT_X - LEFT_X
     font_size = max(8, min(15, font_size_option))
-    CHARS_PER_LINE = int(85 * (10 / font_size))
-    LINE_H = font_size + 4
+    CHARS_PER_LINE = int(TEXT_W / (font_size * 0.52))
+    LINE_H = font_size + (4 if line_spacing == 1 else 1)
     BODY_START_Y = 620
 
     # ── Header fields in BOLD ──
@@ -549,7 +549,7 @@ async def api_structure(req: StructureReq):
 @app.post("/api/generate-pdf")
 async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
                   medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
-                  font_size: int = Form(10),
+                  font_size: int = Form(10), margin_level: int = Form(0), line_spacing: int = Form(1),
                   images: list[UploadFile] = File(default=[])):
     if not TEMPLATE_PATH.exists():
         raise HTTPException(500, "Plantilla no encontrada")
@@ -560,7 +560,7 @@ async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = F
         img_paths.append(str(p))
 
     pdf = generate_pdf({"tutor": tutor, "fecha": fecha, "mascota": mascota,
-                        "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe}, img_paths, font_size)
+                        "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe}, img_paths, font_size, margin_level, line_spacing)
 
     for p in img_paths:
         try: os.unlink(p)
