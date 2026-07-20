@@ -361,7 +361,7 @@ export default function App(){
                 }}><Download size={16}/> Descargar PDF</button>
                 <button className="btn btn-glass" onClick={sharePDF}><Send size={16}/> Compartir por WhatsApp</button>
                 <button className="btn btn-blue" style={{marginTop:10}} onClick={async()=>{
-                  try{await saveReport({...data,transcripcion_original:transcription});setSuccess('Informe guardado en la base de datos')}catch(e:any){setError(e.message)}
+                  try{const r=await saveReport({...data,transcripcion_original:transcription});setSuccess(`Informe guardado. ${r.patterns_learned||0} patrón(es) aprendido(s).`)}catch(e:any){setError(e.message)}
                 }}><Save size={16}/> Guardar informe</button>
               </>}
               <button className="btn btn-glass" onClick={saveDraft}><Save size={16}/> Guardar borrador</button>

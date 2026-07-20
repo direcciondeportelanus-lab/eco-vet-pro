@@ -252,10 +252,22 @@ async def call_llm(provider, api_key, text, style):
 
     content = r.json()["choices"][0]["message"]["content"]
     try:
-        return json.loads(content.replace("```json", "").replace("```", "").strip())
+        result = json.loads(content.replace("```json", "").replace("```", "").strip())
     except:
-        return {"tutor": "", "fecha": "", "mascota": "", "medico_derivante": "",
+        result = {"tutor": "", "fecha": "", "mascota": "", "medico_derivante": "",
                 "cuerpo_informe": content, "estilo_detectado": {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}}
+
+    # Post-process: fix volume formulas (remove 0.523 from display)
+    if result.get("cuerpo_informe"):
+        import re as _re
+        body = result["cuerpo_informe"]
+        # Remove any display of x 0.523 or × 0.523 or x 0,523
+        body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
+        # Fix "= number" to "= number cm³" if missing unit
+        body = _re.sub(r'=\s*(\d+[.,]\d+)\s*\.', r'= \1 cm³.', body)
+        result["cuerpo_informe"] = body
+
+    return result
 
 # ── PDF ──
 def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spacing=1):
@@ -283,7 +295,9 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
     TEXT_W = RIGHT_X - LEFT_X
     font_size = max(8, min(15, font_size_option))
     CHARS_PER_LINE = int(TEXT_W / (font_size * 0.52))
-    LINE_H = font_size + (4 if line_spacing == 1 else 1)
+    LINE_H = font_size + (4 if line_spacing == 1 else 0)
+    ORGAN_GAP = 10 if line_spacing == 1 else 4
+    EMPTY_GAP = 10 if line_spacing == 1 else 3
     BODY_START_Y = 620
 
     # ── Header fields in BOLD ──
@@ -375,7 +389,7 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
 
         for para in body.split("\n"):
             if para.strip() == "":
-                y -= 10
+                y -= EMPTY_GAP
                 continue
 
             stripped = para.strip()
@@ -409,8 +423,8 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
                 colon_idx = stripped.index(":")
                 organ_name = stripped[:colon_idx + 1]
                 organ_text = stripped[colon_idx + 1:].strip()
-                check_y(LINE_H + 10)
-                y -= 10
+                check_y(LINE_H + ORGAN_GAP)
+                y -= ORGAN_GAP
 
                 c.setFont("Helvetica-Bold", 11)
                 c.setFillColor(PURPLE)
@@ -599,21 +613,66 @@ async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = F
 async def save_report(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
                       medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
                       transcripcion_original: str = Form("")):
-    """Save report to Supabase and update learned style."""
-    result = {"saved": False, "id": None}
+    """Save report to Supabase and extract learning patterns."""
+    result = {"saved": False, "id": None, "patterns_learned": 0}
 
     if SUPABASE_URL:
+        # Save the report
         row = await supa_post("informes", {
             "fecha": fecha, "tutor": tutor, "mascota": mascota,
             "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe,
             "transcripcion_original": transcripcion_original,
         })
         if row and isinstance(row, list) and len(row) > 0:
-            result = {"saved": True, "id": row[0].get("id")}
+            result = {"saved": True, "id": row[0].get("id"), "patterns_learned": 0}
         elif row:
-            result = {"saved": True, "id": None}
+            result = {"saved": True, "id": None, "patterns_learned": 0}
+
+        # Extract and save learning patterns from the report text
+        if cuerpo_informe:
+            patterns = extract_patterns_from_report(cuerpo_informe)
+            if patterns:
+                await save_patterns(patterns)
+                result["patterns_learned"] = len(patterns.get("frases_nuevas", [])) + len(patterns.get("terminos_preferidos", {}))
 
     return result
+
+
+def extract_patterns_from_report(text):
+    """Extract reusable patterns from a completed report for learning."""
+    import re as _re
+    patterns = {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}
+
+    # Extract phrases that appear frequently in reports
+    common_phrases = [
+        r"[Hh]allazgos sugestivos de [^.]+",
+        r"[Cc]ompatible con [^.]+",
+        r"[Ss]in particularidades [^.]+",
+        r"[Bb]ordes [^,.]+ y [^.]+",
+        r"[Pp]atrón [^.]+conservado[^.]*",
+        r"[Dd]istensión [^.]+",
+        r"[Ee]cogenicidad [^.]+",
+        r"[Tt]amaño conservado[^.]*",
+    ]
+
+    for pattern in common_phrases:
+        matches = _re.findall(pattern, text)
+        for m in matches:
+            cleaned = m.strip().rstrip(".,;")
+            if 10 < len(cleaned) < 100:
+                patterns["frases_nuevas"].append(cleaned)
+
+    # Extract organ descriptions as style references
+    organ_pattern = _re.findall(r'[A-ZÁÉÍÓÚÑ]{3,}:\s*([^.]+\.)', text)
+    for desc in organ_pattern:
+        desc = desc.strip()
+        if 20 < len(desc) < 200 and "particularidades" not in desc.lower():
+            patterns["frases_nuevas"].append(desc)
+
+    # Deduplicate
+    patterns["frases_nuevas"] = list(set(patterns["frases_nuevas"]))[:20]
+
+    return patterns if patterns["frases_nuevas"] else None
 
 @app.get("/api/stats")
 async def stats():
