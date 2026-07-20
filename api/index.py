@@ -385,7 +385,7 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
 
     if body:
         y = BODY_START_Y
-        font_size = 10
+        #font_size = 10
 
         for para in body.split("\n"):
             if para.strip() == "":
