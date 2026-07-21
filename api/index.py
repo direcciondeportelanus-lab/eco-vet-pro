@@ -47,15 +47,22 @@ async def supa_upsert(table, data):
     return r.json() if r.status_code in (200, 201) else None
 
 # ── Style learning ──
+# FIX TEMPORAL (2026-07-21): antes se traía TODA la tabla "estilo" sin límite,
+# y ese bloque se manda entero en cada request al LLM. Con el uso fue creciendo
+# hasta superar el TPM de Groq (12000). Mientras se rediseña el prompt/estilo,
+# acá se capa a los N registros más recientes por tipo para que no vuelva a pasar.
+MAX_ITEMS_POR_TIPO = 15
+
 async def load_style():
-    rows = await supa_get("estilo", "select=tipo,clave,valor")
+    # order=id.desc + limit trae solo lo último cargado en Supabase
+    rows = await supa_get("estilo", "select=tipo,clave,valor&order=id.desc&limit=150")
     style = {"frases_habituales": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}
     for r in (rows if isinstance(rows, list) else []):
-        if r["tipo"] == "frase":
+        if r["tipo"] == "frase" and len(style["frases_habituales"]) < MAX_ITEMS_POR_TIPO:
             style["frases_habituales"].append(r["valor"])
-        elif r["tipo"] == "termino":
+        elif r["tipo"] == "termino" and len(style["terminos_preferidos"]) < MAX_ITEMS_POR_TIPO:
             style["terminos_preferidos"][r.get("clave", "")] = r["valor"]
-        elif r["tipo"] == "correccion":
+        elif r["tipo"] == "correccion" and len(style["correcciones_frecuentes"]) < MAX_ITEMS_POR_TIPO:
             style["correcciones_frecuentes"].append(r["valor"])
     return style
 
