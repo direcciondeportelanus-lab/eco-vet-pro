@@ -11,7 +11,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import httpx
 
 BASE_DIR = Path(__file__).parent.parent
@@ -571,8 +571,14 @@ class StructureReq(BaseModel):
     provider: str = "groq"
     api_key: str
 
+    @field_validator("api_key")
+    @classmethod
+    def limpiar_api_key(cls, v):
+        return v.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
+
 @app.post("/api/whisper")
 async def api_whisper(audio: UploadFile = File(...), provider: str = Form("groq"), api_key: str = Form("")):
+    api_key = api_key.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
     audio_bytes = await audio.read()
     text = await transcribe_audio(provider, api_key, audio_bytes, audio.filename or "audio.webm")
     return {"text": text}

@@ -11,7 +11,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 import httpx
 
 BASE_DIR = Path(__file__).parent.parent
@@ -185,6 +185,20 @@ RESPUESTA
 RESPONDE SOLO con JSON valido. Sin markdown. Sin backticks. Sin texto adicional.
 {"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"texto completo del informe","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
 
+# ── Banco de frases y patrones de redacción reales de la Dra. ──
+# Se lee desde un archivo satélite (igual que el glosario), para poder
+# actualizarlo sin tocar el código. Son patrones de estilo y vocabulario
+# (sin nombres de pacientes ni medidas de casos puntuales) extraídos de
+# informes históricos.
+FRASES_PATH = BASE_DIR / "data" / "frases_historicas.json"
+
+def load_frases_historicas():
+    if FRASES_PATH.exists():
+        return json.loads(FRASES_PATH.read_text(encoding="utf-8"))
+    return []
+
+FRASES_HISTORICAS = load_frases_historicas()
+
 PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "llama-3.3-70b-versatile",
              "whisper_url": "https://api.groq.com/openai/v1/audio/transcriptions", "whisper_model": "whisper-large-v3"},
@@ -239,6 +253,12 @@ async def call_llm(provider, api_key, text, style):
     if not cfg:
         raise HTTPException(400, "Proveedor no soportado")
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if FRASES_HISTORICAS:
+        banco = "BANCO DE FRASES Y PATRONES DE REDACCIÓN HABITUALES DE LA DRA. " \
+                "(usalos como referencia de vocabulario y estilo cuando el caso lo amerite, " \
+                "no los repitas literal si no corresponde al hallazgo real):\n- " + \
+                "\n- ".join(FRASES_HISTORICAS)
+        messages.append({"role": "system", "content": banco})
     if style and any(style.values()):
         messages.append({"role": "system", "content": f"ESTILO APRENDIDO:\n{json.dumps(style, ensure_ascii=False)}"})
     messages.append({"role": "user", "content": text})
@@ -568,11 +588,17 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 class StructureReq(BaseModel):
     transcription: str
-    provider: str = "groq"
+    provider: str = "openai"
     api_key: str
 
+    @field_validator("api_key")
+    @classmethod
+    def limpiar_api_key(cls, v):
+        return v.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
+
 @app.post("/api/whisper")
-async def api_whisper(audio: UploadFile = File(...), provider: str = Form("groq"), api_key: str = Form("")):
+async def api_whisper(audio: UploadFile = File(...), provider: str = Form("openai"), api_key: str = Form("")):
+    api_key = api_key.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
     audio_bytes = await audio.read()
     text = await transcribe_audio(provider, api_key, audio_bytes, audio.filename or "audio.webm")
     return {"text": text}
