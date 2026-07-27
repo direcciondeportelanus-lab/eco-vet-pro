@@ -85,6 +85,12 @@ SYSTEM_PROMPT = """Sos el asistente oficial de redacción de informes ecográfic
 ═══════════════════════════════
 REGLA #0 — LO QUE NUNCA HACÉS
 ═══════════════════════════════
+- NUNCA te bloqueás ni dejás de redactar porque una palabra, nombre propio, localidad o
+  término no te resulte familiar. Los patrones, la tabla y las frases guardadas son una
+  AYUDA de referencia, no una jaula: si algo no está ahí, usás tu propio criterio e
+  inteligencia para interpretarlo y redactarlo de todos modos. Nunca dejes algo sin
+  redactar ni le pidas a la Dra. que lo aclare salvo que sea información clínica
+  imposible de inferir.
 - NUNCA inventás datos, hallazgos, medidas ni diagnósticos que no estén en el dictado.
 - NUNCA resumís. Tu trabajo es ORDENAR, CLARIFICAR y REDACTAR con precisión lo que la Dra. dictó. Cada hallazgo, cada medida, cada detalle que ella diga debe quedar en el informe. No omitas nada.
 - NUNCA cambiás el significado clínico.
@@ -165,7 +171,13 @@ FORMATO DEL TEXTO
   Los numeros con unidades son datos importantes del informe.
 
 CONCLUSION (SIEMPRE al final, debe ser COMPLETA y DETALLADA):
-- Titulo: CONCLUSION
+- La conclusión NUNCA es una copia ni una transcripción casi idéntica del cuerpo del
+  informe. Es una SÍNTESIS: extraés el diagnóstico o impresión de cada hallazgo
+  patológico, en lenguaje conciso, sin repetir las descripciones morfológicas
+  detalladas (medidas, ecogenicidad, bordes, etc.) que ya están en el cuerpo. Si en
+  el cuerpo describiste 4 líneas sobre el hígado, en la conclusión va UNA línea con
+  el diagnóstico de ese hallazgo, no el detalle completo de nuevo.
+- Título: CONCLUSION
 - Enumerar TODOS los hallazgos patologicos encontrados, cada uno precedido por *
 - Incluir grado de severidad cuando corresponda (leve, moderado, severo)
 - Incluir localizacion cuando corresponda
@@ -191,6 +203,29 @@ RESPUESTA
 ===============================
 RESPONDE SOLO con JSON valido. Sin markdown. Sin backticks. Sin texto adicional.
 {"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"texto completo del informe","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
+
+# ── Banco de frases y patrones de redacción reales de la Dra. ──
+FRASES_PATH = BASE_DIR / "data" / "frases_historicas.json"
+
+def load_frases_historicas():
+    if FRASES_PATH.exists():
+        return json.loads(FRASES_PATH.read_text(encoding="utf-8"))
+    return []
+
+FRASES_HISTORICAS = load_frases_historicas()
+
+# ── Tabla de hallazgos de referencia (tablas_eco.txt procesado) ──
+# Cuando la Dra. dice "hepatomegalia tal de la tabla" (o similar), esto le da a GPT
+# el texto de referencia completo para ADAPTAR -- no copiar literal. GPT ajusta
+# medidas, severidad o lo que la Dra. pida distinto ("cambiale el tamaño a X mm").
+TABLA_PATH = BASE_DIR / "data" / "tabla_hallazgos.json"
+
+def load_tabla_hallazgos():
+    if TABLA_PATH.exists():
+        return json.loads(TABLA_PATH.read_text(encoding="utf-8"))
+    return []
+
+TABLA_HALLAZGOS = load_tabla_hallazgos()
 
 PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "llama-3.3-70b-versatile",
@@ -246,6 +281,19 @@ async def call_llm(provider, api_key, text, style):
     if not cfg:
         raise HTTPException(400, "Proveedor no soportado")
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if FRASES_HISTORICAS:
+        banco = "BANCO DE FRASES Y PATRONES DE REDACCIÓN HABITUALES DE LA DRA. " \
+                "(usalos como referencia de vocabulario y estilo cuando el caso lo amerite, " \
+                "no los repitas literal si no corresponde al hallazgo real):\n- " + \
+                "\n- ".join(FRASES_HISTORICAS)
+        messages.append({"role": "system", "content": banco})
+    if TABLA_HALLAZGOS:
+        tabla_txt = "TABLA DE HALLAZGOS DE REFERENCIA POR ÓRGANO. Si la Dra. dice algo como " \
+                    "'hepatomegalia leve de la tabla' o pide reutilizar un patrón conocido, " \
+                    "buscá la entrada que mejor matchee y ADAPTALA a lo que pida (medidas, " \
+                    "severidad, lo que cambie) -- nunca la copies literal si el caso real difiere:\n\n" + \
+                    "\n\n".join(e["texto"] for e in TABLA_HALLAZGOS)
+        messages.append({"role": "system", "content": tabla_txt})
     if style and any(style.values()):
         messages.append({"role": "system", "content": f"ESTILO APRENDIDO:\n{json.dumps(style, ensure_ascii=False)}"})
     messages.append({"role": "user", "content": text})
@@ -273,6 +321,12 @@ async def call_llm(provider, api_key, text, style):
         # Fix "= number" to "= number cm³" if missing unit
         body = _re.sub(r'=\s*(\d+[.,]\d+)\s*\.', r'= \1 cm³.', body)
         result["cuerpo_informe"] = body
+
+    # Red de seguridad: la firma SIEMPRE debe aparecer, la pida o no la pida la Dra.
+    cuerpo = result.get("cuerpo_informe", "") or ""
+    if "M.V. Raffo Silvina" not in cuerpo:
+        cuerpo = cuerpo.rstrip() + "\n\nInforme realizado por:\nM.V. Raffo Silvina"
+        result["cuerpo_informe"] = cuerpo
 
     return result
 
