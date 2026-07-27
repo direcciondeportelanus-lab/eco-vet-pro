@@ -85,17 +85,10 @@ export default function App(){
         try{
           const text=await whisperTranscribe(blob,provider,apiKey)
           if(!text||text.trim().length<3){setError('No se detectó audio. Intentá de nuevo.');setPhase('idle');return}
-          const nuevaTranscripcion=transcription?transcription+' '+text:text
-          setTranscription(nuevaTranscripcion)
+          setTranscription(p=>p?p+' '+text:text)
           setPhase('structuring')
-          // Si ya había un informe estructurado/corregido en pantalla, se lo mandamos
-          // a GPT como contexto junto con el audio nuevo -- así no pierde las
-          // correcciones que la Dra. ya hizo a mano. Si es la primera vez que
-          // dicta (no hay informe previo), se manda el dictado crudo nomás.
-          const textoAEnviar=data.cuerpo_informe
-            ? `INFORME YA ESTRUCTURADO Y CORREGIDO HASTA AHORA (no descartar, partir de acá):\n${data.cuerpo_informe}\n\nNUEVO DICTADO DE LA DRA. (agregar, corregir o modificar el informe de arriba según corresponda):\n${text}`
-            : nuevaTranscripcion
-          const r=await structureReport(textoAEnviar,provider,apiKey)
+          const full=transcription?transcription+' '+text:text
+          const r=await structureReport(full,provider,apiKey)
           setData({tutor:r.tutor||data.tutor||'',fecha:r.fecha||data.fecha,mascota:r.mascota||data.mascota||'',medico_derivante:r.medico_derivante||data.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''})
           setSuccess(r.estilo_detectado?.frases_nuevas?.length>0?`Informe listo · ${r.estilo_detectado.frases_nuevas.length} patrón(es) aprendido(s)`:'Informe estructurado correctamente')
           setStep('edit')
@@ -109,10 +102,7 @@ export default function App(){
   const manualProcess=async()=>{
     if(!apiKey){setShowConfig(true);return};if(!transcription.trim()){setError('Sin texto');return}
     setPhase('structuring');setError('')
-    const textoAEnviar=data.cuerpo_informe
-      ? `INFORME YA ESTRUCTURADO Y CORREGIDO HASTA AHORA (no descartar, partir de acá):\n${data.cuerpo_informe}\n\nNUEVO DICTADO/TEXTO DE LA DRA. (agregar, corregir o modificar el informe de arriba según corresponda):\n${transcription}`
-      : transcription
-    try{const r=await structureReport(textoAEnviar,provider,apiKey);setData({tutor:r.tutor||data.tutor||'',fecha:r.fecha||data.fecha,mascota:r.mascota||data.mascota||'',medico_derivante:r.medico_derivante||data.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''});setSuccess('Informe estructurado');setStep('edit')}catch(e:any){setError(e.message)}
+    try{const r=await structureReport(transcription,provider,apiKey);setData({tutor:r.tutor||'',fecha:r.fecha||data.fecha,mascota:r.mascota||'',medico_derivante:r.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''});setSuccess('Informe estructurado');setStep('edit')}catch(e:any){setError(e.message)}
     setPhase('idle')
   }
   const addImgs=(e:React.ChangeEvent<HTMLInputElement>)=>{Array.from(e.target.files||[]).forEach(f=>{setImgFiles(p=>[...p,f]);const r=new FileReader();r.onload=ev=>setImgPrevs(p=>[...p,ev.target?.result as string]);r.readAsDataURL(f)});e.target.value=''}
