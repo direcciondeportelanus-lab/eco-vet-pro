@@ -93,7 +93,28 @@ export default function App(){
           // correcciones que la Dra. ya hizo a mano. Si es la primera vez que
           // dicta (no hay informe previo), se manda el dictado crudo nomás.
           const textoAEnviar=data.cuerpo_informe
-            ? `INFORME YA ESTRUCTURADO Y CORREGIDO HASTA AHORA (no descartar, partir de acá):\n${data.cuerpo_informe}\n\nNUEVO DICTADO DE LA DRA. (agregar, corregir o modificar el informe de arriba según corresponda):\n${text}`
+            ? `MODO CONTINUACIÓN -- INSTRUCCIONES ESTRICTAS:
+El INFORME ACTUAL de abajo ya fue revisado y corregido por la Dra. y está CORRECTO
+tal cual está. NO reescribas, no reordenes, no cambies el estilo ni la redacción de
+NADA de lo que ya está ahí -- cada oración que no sea tocada por el dictado nuevo
+debe quedar LITERALMENTE IGUAL, carácter por carácter.
+
+Tu única tarea es tomar el DICTADO NUEVO de más abajo e integrarlo:
+- Si agrega información de un órgano que falta o está incompleto, agregala en el
+  lugar correcto (según el orden de órganos del prompt), sin tocar el resto.
+- Si dice explícitamente que hay que cambiar un dato puntual ("cambiale el tamaño
+  a...", "en realidad es...", "corregí que..."), cambiá SOLO ese dato, dejando
+  todo lo demás exactamente igual.
+- Si no tiene relación con nada del informe actual, agregalo como información
+  nueva en el órgano que corresponda.
+
+Devolvé el INFORME COMPLETO (el actual + la integración).
+
+INFORME ACTUAL (ya corregido, no reescribir):
+${data.cuerpo_informe}
+
+DICTADO NUEVO A INTEGRAR:
+${text}`
             : nuevaTranscripcion
           const r=await structureReport(textoAEnviar,provider,apiKey)
           setData({tutor:r.tutor||data.tutor||'',fecha:r.fecha||data.fecha,mascota:r.mascota||data.mascota||'',medico_derivante:r.medico_derivante||data.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''})
@@ -110,7 +131,28 @@ export default function App(){
     if(!apiKey){setShowConfig(true);return};if(!transcription.trim()){setError('Sin texto');return}
     setPhase('structuring');setError('')
     const textoAEnviar=data.cuerpo_informe
-      ? `INFORME YA ESTRUCTURADO Y CORREGIDO HASTA AHORA (no descartar, partir de acá):\n${data.cuerpo_informe}\n\nNUEVO DICTADO/TEXTO DE LA DRA. (agregar, corregir o modificar el informe de arriba según corresponda):\n${transcription}`
+      ? `MODO CONTINUACIÓN -- INSTRUCCIONES ESTRICTAS:
+El INFORME ACTUAL de abajo ya fue revisado y corregido por la Dra. y está CORRECTO
+tal cual está. NO reescribas, no reordenes, no cambies el estilo ni la redacción de
+NADA de lo que ya está ahí -- cada oración que no sea tocada por el texto nuevo
+debe quedar LITERALMENTE IGUAL, carácter por carácter.
+
+Tu única tarea es tomar el TEXTO NUEVO de más abajo e integrarlo:
+- Si agrega información de un órgano que falta o está incompleto, agregala en el
+  lugar correcto (según el orden de órganos del prompt), sin tocar el resto.
+- Si dice explícitamente que hay que cambiar un dato puntual ("cambiale el tamaño
+  a...", "en realidad es...", "corregí que..."), cambiá SOLO ese dato, dejando
+  todo lo demás exactamente igual.
+- Si no tiene relación con nada del informe actual, agregalo como información
+  nueva en el órgano que corresponda.
+
+Devolvé el INFORME COMPLETO (el actual + la integración).
+
+INFORME ACTUAL (ya corregido, no reescribir):
+${data.cuerpo_informe}
+
+TEXTO NUEVO A INTEGRAR:
+${transcription}`
       : transcription
     try{const r=await structureReport(textoAEnviar,provider,apiKey);setData({tutor:r.tutor||data.tutor||'',fecha:r.fecha||data.fecha,mascota:r.mascota||data.mascota||'',medico_derivante:r.medico_derivante||data.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''});setSuccess('Informe estructurado');setStep('edit')}catch(e:any){setError(e.message)}
     setPhase('idle')
