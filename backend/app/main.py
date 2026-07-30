@@ -186,7 +186,10 @@ CONCLUSION (SIEMPRE al final, debe ser COMPLETA y DETALLADA):
   detalladas (medidas, ecogenicidad, bordes, etc.) que ya están en el cuerpo. Si en
   el cuerpo describiste 4 líneas sobre el hígado, en la conclusión va UNA línea con
   el diagnóstico de ese hallazgo, no el detalle completo de nuevo.
-- Título: CONCLUSION
+- Título: CONCLUSION -- va SOLO en su propia línea, SIN ":" y SIN texto pegado al lado.
+  Después del título va un salto de línea real (\n) y recién ahí empiezan los items.
+- Cada hallazgo va en su PROPIA línea, precedido por "* " (nunca dos items en la misma línea,
+  nunca el título y un item en la misma línea).
 - Enumerar TODOS los hallazgos patologicos encontrados, cada uno precedido por *
 - Incluir grado de severidad cuando corresponda (leve, moderado, severo)
 - Incluir localizacion cuando corresponda
@@ -329,6 +332,15 @@ async def call_llm(provider, api_key, text, style):
         body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
         # Fix "= number" to "= number cm³" if missing unit
         body = _re.sub(r'=\s*(\d+[.,]\d+)\s*\.', r'= \1 cm³.', body)
+
+        # FIX (2026-07-30): red de seguridad de formato para la CONCLUSIÓN.
+        # Si el LLM la devuelve pegada en una sola línea (ej: "CONCLUSIÓN: * item1 *
+        # item2...") en vez de "CONCLUSION" solo + un "* item" por línea, el PDF la
+        # dibujaba sin wrap y se cortaba. Acá forzamos: 1) el título de la conclusión
+        # en su propia línea, sin ":" pegado, y 2) cada bullet "*" en su propia línea.
+        body = _re.sub(r'(?i)(conclusi[oó]n)\s*:\s*', r'\1\n', body)
+        body = _re.sub(r'(?<!^)(?<!\n)\s*\*\s+', '\n* ', body, flags=_re.MULTILINE)
+
         result["cuerpo_informe"] = body
 
     # Red de seguridad: la firma SIEMPRE debe aparecer, la pida o no la pida la Dra.
@@ -465,7 +477,15 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
             stripped = para.strip()
 
             # Detect paragraph type
-            is_conclusion_header = stripped.upper().startswith("CONCLUSI")
+            # FIX (2026-07-30): antes esto matcheaba cualquier línea que empezara con
+            # "CONCLUSI", sin importar el largo. Si el LLM devolvía la conclusión pegada
+            # en una sola línea ("CONCLUSIÓN: * item1 * item2...") esa línea entera se
+            # dibujaba con drawString SIN wrap y SIN volver a chequear salto de página,
+            # por eso se cortaba a mitad de palabra y no continuaba en la hoja 2.
+            # Con el límite de largo, solo el TÍTULO solo ("CONCLUSION") entra acá; si
+            # viene mezclado con contenido, cae en la rama is_organ_header de abajo,
+            # que sí wrappea y pagina correctamente.
+            is_conclusion_header = stripped.upper().startswith("CONCLUSI") and len(stripped) < 55
             is_section_header = stripped.isupper() and len(stripped) < 50
             is_conclusion_item = stripped.startswith("*")
             is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
@@ -483,8 +503,15 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
                 c.setFont("Helvetica-Bold", 12)
                 c.setFillColor(PURPLE)
                 y -= 8
-                c.drawString(LEFT_X, y, stripped)
-                y -= LINE_H + 4
+                # Wrap defensivo: aunque a esta rama ahora solo deberían llegar títulos
+                # cortos, si algo se cuela más largo igual pagina en vez de cortarse.
+                header_wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
+                for hi, hline in enumerate(header_wrapped):
+                    if hi > 0:
+                        check_y(LINE_H)
+                    c.drawString(LEFT_X, y, hline)
+                    y -= LINE_H
+                y -= 4
                 c.setFont("Helvetica", font_size)
                 c.setFillColor(BLACK)
                 continue
