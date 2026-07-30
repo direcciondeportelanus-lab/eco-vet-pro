@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo, processAllReports } from './api/client'
+import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo, processAllReports, editReport } from './api/client'
 
 type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -351,8 +351,52 @@ ${transcription}`
                 </div>
               </div>
               <div className="panel">
-                <div className="panel-head"><span className="panel-title"><FileText size={16}/> Informe ecográfico</span></div>
-                <div className="panel-body"><textarea className="form-input" style={{minHeight:320}} value={data.cuerpo_informe} onChange={e=>u('cuerpo_informe',e.target.value)}/></div>
+                <div className="panel-head">
+                  <span className="panel-title"><FileText size={16}/> Informe ecográfico</span>
+                  <button className={`btn ${phase==='recording'?'btn-orange':'btn-blue'}`}
+                    style={{width:'auto',padding:'8px 16px',flex:'none',fontSize:13}}
+                    onClick={async()=>{
+                      if(phase==='recording'){
+                        mediaRec.current?.stop()
+                      } else if(phase==='idle'){
+                        if(!apiKey){setShowConfig(true);return}
+                        setError('');setSuccess('')
+                        try{
+                          const stream=await navigator.mediaDevices.getUserMedia({audio:true})
+                          let mimeType='audio/webm;codecs=opus'
+                          if(!MediaRecorder.isTypeSupported(mimeType)){mimeType='audio/mp4';if(!MediaRecorder.isTypeSupported(mimeType)){mimeType=''}}
+                          const rec=mimeType?new MediaRecorder(stream,{mimeType}):new MediaRecorder(stream)
+                          const actualMime=rec.mimeType||mimeType||'audio/webm'
+                          chunks.current=[]
+                          rec.ondataavailable=e=>{if(e.data.size>0)chunks.current.push(e.data)}
+                          rec.onstop=async()=>{
+                            stream.getTracks().forEach(t=>t.stop())
+                            const blob=new Blob(chunks.current,{type:actualMime})
+                            setPhase('transcribing')
+                            try{
+                              const text=await whisperTranscribe(blob,provider,apiKey)
+                              if(!text||text.trim().length<3){setError('No se detectó audio');setPhase('idle');return}
+                              setPhase('structuring')
+                              setSuccess('Aplicando instrucción...')
+                              const r=await editReport(data.cuerpo_informe,text,provider,apiKey,data)
+                              if(r.cuerpo_informe){
+                                setData(prev=>({...prev,cuerpo_informe:r.cuerpo_informe}))
+                                setSuccess(`Editado: ${r.cambios_realizados||'cambios aplicados'}`)
+                              }
+                            }catch(e:any){setError(e.message)}
+                            setPhase('idle')
+                          }
+                          rec.start();mediaRec.current=rec;setPhase('recording')
+                        }catch(e:any){setError('Micrófono: '+e.message)}
+                      }
+                    }}>
+                    {phase==='recording'?<><Square size={14}/> Detener</>:phase!=='idle'?<><Loader size={14} className="spin"/> Procesando...</>:<><Mic size={14}/> Editar por voz</>}
+                  </button>
+                </div>
+                <div className="panel-body">
+                  {phase==='recording'&&<p style={{color:'var(--orange)',fontSize:13,marginBottom:10,fontWeight:600}}>🔴 Grabando instrucción... Ej: "sacá la frase de bazo", "completá la conclusión", "agregá a riñones que..."</p>}
+                  <textarea className="form-input" style={{minHeight:320}} value={data.cuerpo_informe} onChange={e=>u('cuerpo_informe',e.target.value)}/>
+                </div>
               </div>
               <div className="panel">
                 <div className="panel-head"><span className="panel-title"><Camera size={16}/> Ecografías (hasta 18)</span></div>
