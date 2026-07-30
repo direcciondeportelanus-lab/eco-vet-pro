@@ -58,4 +58,4 @@ eco-app/
 ├── supabase_schema.sql  ← SQL para crear tablas
 ├── setup.bat
 └── start.bat
-```
+``` 
