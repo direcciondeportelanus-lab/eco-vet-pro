@@ -47,22 +47,15 @@ async def supa_upsert(table, data):
     return r.json() if r.status_code in (200, 201) else None
 
 # ── Style learning ──
-# FIX TEMPORAL (2026-07-21): antes se traía TODA la tabla "estilo" sin límite,
-# y ese bloque se manda entero en cada request al LLM. Con el uso fue creciendo
-# hasta superar el TPM de Groq (12000). Mientras se rediseña el prompt/estilo,
-# acá se capa a los N registros más recientes por tipo para que no vuelva a pasar.
-MAX_ITEMS_POR_TIPO = 15
-
 async def load_style():
-    # order=id.desc + limit trae solo lo último cargado en Supabase
-    rows = await supa_get("estilo", "select=tipo,clave,valor&order=id.desc&limit=150")
+    rows = await supa_get("estilo", "select=tipo,clave,valor")
     style = {"frases_habituales": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}
     for r in (rows if isinstance(rows, list) else []):
-        if r["tipo"] == "frase" and len(style["frases_habituales"]) < MAX_ITEMS_POR_TIPO:
+        if r["tipo"] == "frase":
             style["frases_habituales"].append(r["valor"])
-        elif r["tipo"] == "termino" and len(style["terminos_preferidos"]) < MAX_ITEMS_POR_TIPO:
+        elif r["tipo"] == "termino":
             style["terminos_preferidos"][r.get("clave", "")] = r["valor"]
-        elif r["tipo"] == "correccion" and len(style["correcciones_frecuentes"]) < MAX_ITEMS_POR_TIPO:
+        elif r["tipo"] == "correccion":
             style["correcciones_frecuentes"].append(r["valor"])
     return style
 
@@ -186,10 +179,7 @@ CONCLUSION (SIEMPRE al final, debe ser COMPLETA y DETALLADA):
   detalladas (medidas, ecogenicidad, bordes, etc.) que ya están en el cuerpo. Si en
   el cuerpo describiste 4 líneas sobre el hígado, en la conclusión va UNA línea con
   el diagnóstico de ese hallazgo, no el detalle completo de nuevo.
-- Título: CONCLUSION -- va SOLO en su propia línea, SIN ":" y SIN texto pegado al lado.
-  Después del título va un salto de línea real (\n) y recién ahí empiezan los items.
-- Cada hallazgo va en su PROPIA línea, precedido por "* " (nunca dos items en la misma línea,
-  nunca el título y un item en la misma línea).
+- Título: CONCLUSION
 - Enumerar TODOS los hallazgos patologicos encontrados, cada uno precedido por *
 - Incluir grado de severidad cuando corresponda (leve, moderado, severo)
 - Incluir localizacion cuando corresponda
@@ -217,6 +207,10 @@ RESPONDE SOLO con JSON valido. Sin markdown. Sin backticks. Sin texto adicional.
 {"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"texto completo del informe","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
 
 # ── Banco de frases y patrones de redacción reales de la Dra. ──
+# Se lee desde un archivo satélite (igual que el glosario), para poder
+# actualizarlo sin tocar el código. Son patrones de estilo y vocabulario
+# (sin nombres de pacientes ni medidas de casos puntuales) extraídos de
+# informes históricos.
 FRASES_PATH = BASE_DIR / "data" / "frases_historicas.json"
 
 def load_frases_historicas():
@@ -332,15 +326,6 @@ async def call_llm(provider, api_key, text, style):
         body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
         # Fix "= number" to "= number cm³" if missing unit
         body = _re.sub(r'=\s*(\d+[.,]\d+)\s*\.', r'= \1 cm³.', body)
-
-        # FIX (2026-07-30): red de seguridad de formato para la CONCLUSIÓN.
-        # Si el LLM la devuelve pegada en una sola línea (ej: "CONCLUSIÓN: * item1 *
-        # item2...") en vez de "CONCLUSION" solo + un "* item" por línea, el PDF la
-        # dibujaba sin wrap y se cortaba. Acá forzamos: 1) el título de la conclusión
-        # en su propia línea, sin ":" pegado, y 2) cada bullet "*" en su propia línea.
-        body = _re.sub(r'(?i)(conclusi[oó]n)\s*:\s*', r'\1\n', body)
-        body = _re.sub(r'(?<!^)(?<!\n)\s*\*\s+', '\n* ', body, flags=_re.MULTILINE)
-
         result["cuerpo_informe"] = body
 
     # Red de seguridad: la firma SIEMPRE debe aparecer, la pida o no la pida la Dra.
@@ -477,15 +462,7 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
             stripped = para.strip()
 
             # Detect paragraph type
-            # FIX (2026-07-30): antes esto matcheaba cualquier línea que empezara con
-            # "CONCLUSI", sin importar el largo. Si el LLM devolvía la conclusión pegada
-            # en una sola línea ("CONCLUSIÓN: * item1 * item2...") esa línea entera se
-            # dibujaba con drawString SIN wrap y SIN volver a chequear salto de página,
-            # por eso se cortaba a mitad de palabra y no continuaba en la hoja 2.
-            # Con el límite de largo, solo el TÍTULO solo ("CONCLUSION") entra acá; si
-            # viene mezclado con contenido, cae en la rama is_organ_header de abajo,
-            # que sí wrappea y pagina correctamente.
-            is_conclusion_header = stripped.upper().startswith("CONCLUSI") and len(stripped) < 55
+            is_conclusion_header = stripped.upper().startswith("CONCLUSI")
             is_section_header = stripped.isupper() and len(stripped) < 50
             is_conclusion_item = stripped.startswith("*")
             is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
@@ -503,15 +480,8 @@ def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spac
                 c.setFont("Helvetica-Bold", 12)
                 c.setFillColor(PURPLE)
                 y -= 8
-                # Wrap defensivo: aunque a esta rama ahora solo deberían llegar títulos
-                # cortos, si algo se cuela más largo igual pagina en vez de cortarse.
-                header_wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
-                for hi, hline in enumerate(header_wrapped):
-                    if hi > 0:
-                        check_y(LINE_H)
-                    c.drawString(LEFT_X, y, hline)
-                    y -= LINE_H
-                y -= 4
+                c.drawString(LEFT_X, y, stripped)
+                y -= LINE_H + 4
                 c.setFont("Helvetica", font_size)
                 c.setFillColor(BLACK)
                 continue
@@ -665,7 +635,7 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 class StructureReq(BaseModel):
     transcription: str
-    provider: str = "groq"
+    provider: str = "openai"
     api_key: str
 
     @field_validator("api_key")
@@ -674,7 +644,7 @@ class StructureReq(BaseModel):
         return v.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
 
 @app.post("/api/whisper")
-async def api_whisper(audio: UploadFile = File(...), provider: str = Form("groq"), api_key: str = Form("")):
+async def api_whisper(audio: UploadFile = File(...), provider: str = Form("openai"), api_key: str = Form("")):
     api_key = api_key.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
     audio_bytes = await audio.read()
     text = await transcribe_audio(provider, api_key, audio_bytes, audio.filename or "audio.webm")
@@ -686,6 +656,93 @@ async def api_structure(req: StructureReq):
     result = await call_llm(req.provider, req.api_key, req.transcription, style)
     if result.get("estilo_detectado"):
         await save_patterns(result["estilo_detectado"])
+    return result
+
+
+class EditReq(BaseModel):
+    current_report: str
+    instruction: str
+    provider: str = "openai"
+    api_key: str
+    tutor: str = ""
+    fecha: str = ""
+    mascota: str = ""
+    medico_derivante: str = ""
+
+    @field_validator("api_key")
+    @classmethod
+    def limpiar_api_key_edit(cls, v):
+        return v.strip().lstrip("\ufeff")
+
+EDIT_PROMPT = """Sos el asistente de edición de informes ecográficos de la Dra. Silvina Raffo.
+
+CONTEXTO: Te paso un informe ecográfico YA REDACTADO y una INSTRUCCIÓN de la Dra.
+
+TU TRABAJO:
+1. Recibís el informe actual completo
+2. Recibís una instrucción de voz de la Dra. (puede ser confusa por ser dictado)
+3. Interpretás QUÉ QUIERE que hagas:
+   - "sacá eso" / "borrá tal cosa" → eliminás esa parte del informe
+   - "cambiá X por Y" / "donde dice X poné Y" → reemplazás
+   - "agregá a [órgano] que..." → agregás info a ese órgano
+   - "completá [órgano]" / "completá esa frase" → usás tu conocimiento médico para completar
+   - "poné la conclusión" / "hacé la conclusión" → generás la conclusión como síntesis
+   - "el volumen de X por Y por Z" → calculás (largo × ancho × alto × 0.523) y mostrás resultado sin el 0.523
+   - Cualquier otra instrucción → interpretás y ejecutás
+
+REGLAS CRÍTICAS:
+- NUNCA toques partes del informe que la instrucción no menciona
+- NUNCA reescribas todo de cero — solo modificá lo que se pide
+- Si la instrucción es ambigua, hacé lo más razonable
+- Devolvé el informe COMPLETO (el original + las modificaciones)
+- Mantené el formato: órganos en MAYÚSCULAS, medidas con unidades, etc.
+- La CONCLUSIÓN es una SÍNTESIS de hallazgos, NO una copia del cuerpo
+
+RESPONDÉ SOLO con JSON válido:
+{"cuerpo_informe": "informe completo modificado", "cambios_realizados": "descripción breve de qué cambiaste"}"""
+
+
+@app.post("/api/edit-report")
+async def api_edit_report(req: EditReq):
+    """Edit an existing report with voice/text instructions."""
+    cfg = PROVIDERS.get(req.provider)
+    if not cfg:
+        raise HTTPException(400, "Proveedor no soportado")
+
+    messages = [
+        {"role": "system", "content": EDIT_PROMPT},
+        {"role": "user", "content": f"""INFORME ACTUAL:
+---
+Paciente datos: Tutor: {req.tutor}, Mascota: {req.mascota}, Fecha: {req.fecha}, Méd. Derivante: {req.medico_derivante}
+
+{req.current_report}
+---
+
+INSTRUCCIÓN DE LA DRA:
+{req.instruction}"""}
+    ]
+
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(cfg["url"],
+            headers={"Authorization": f"Bearer {req.api_key}", "Content-Type": "application/json"},
+            json={"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": 4000})
+
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"LLM error: {r.json().get('error',{}).get('message', r.text)}")
+
+    content = r.json()["choices"][0]["message"]["content"]
+    try:
+        result = json.loads(content.replace("```json", "").replace("```", "").strip())
+    except:
+        result = {"cuerpo_informe": content, "cambios_realizados": "respuesta no estructurada"}
+
+    # Post-process volume
+    if result.get("cuerpo_informe"):
+        import re as _re
+        body = result["cuerpo_informe"]
+        body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
+        result["cuerpo_informe"] = body
+
     return result
 
 @app.post("/api/generate-pdf")
