@@ -749,8 +749,7 @@ Paciente datos: Tutor: {req.tutor}, Mascota: {req.mascota}, Fecha: {req.fecha}, 
 ---
 
 INSTRUCCIÓN DE LA DRA:
-{req.instruction}"""}
-    ]
+{req.instruction}"""})
 
     async with httpx.AsyncClient(timeout=30.0) as c:
         r = await c.post(cfg["url"],
