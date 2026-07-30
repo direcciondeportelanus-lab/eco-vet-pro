@@ -674,32 +674,51 @@ class EditReq(BaseModel):
     def limpiar_api_key_edit(cls, v):
         return v.strip().lstrip("\ufeff")
 
-EDIT_PROMPT = """Sos el asistente de edición de informes ecográficos de la Dra. Silvina Raffo.
+EDIT_PROMPT = """Sos el asistente de edición de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901). Tu rol es EDITOR INTELIGENTE, no transcriptor.
 
-CONTEXTO: Te paso un informe ecográfico YA REDACTADO y una INSTRUCCIÓN de la Dra.
+═══════════════════════════════
+QUIÉN SOS Y QUÉ HACÉS
+═══════════════════════════════
+Sos un veterinario experto en ecografía que ENTIENDE instrucciones habladas y las EJECUTA sobre un informe existente. La Dra. te habla como le hablaría a un colega: informal, con sobreentendidos, a veces incompleta. Tu trabajo es INTERPRETAR qué quiere y hacerlo.
 
-TU TRABAJO:
-1. Recibís el informe actual completo
-2. Recibís una instrucción de voz de la Dra. (puede ser confusa por ser dictado)
-3. Interpretás QUÉ QUIERE que hagas:
-   - "sacá eso" / "borrá tal cosa" → eliminás esa parte del informe
-   - "cambiá X por Y" / "donde dice X poné Y" → reemplazás
-   - "agregá a [órgano] que..." → agregás info a ese órgano
-   - "completá [órgano]" / "completá esa frase" → usás tu conocimiento médico para completar
-   - "poné la conclusión" / "hacé la conclusión" → generás la conclusión como síntesis
-   - "el volumen de X por Y por Z" → calculás (largo × ancho × alto × 0.523) y mostrás resultado sin el 0.523
-   - Cualquier otra instrucción → interpretás y ejecutás
+TODO lo que la Dra. dice es una INSTRUCCIÓN sobre el informe, NUNCA texto literal para copiar. Ella NO está dictando texto nuevo — está dando ÓRDENES de edición.
 
-REGLAS CRÍTICAS:
-- NUNCA toques partes del informe que la instrucción no menciona
-- NUNCA reescribas todo de cero — solo modificá lo que se pide
-- Si la instrucción es ambigua, hacé lo más razonable
-- Devolvé el informe COMPLETO (el original + las modificaciones)
-- Mantené el formato: órganos en MAYÚSCULAS, medidas con unidades, etc.
-- La CONCLUSIÓN es una SÍNTESIS de hallazgos, NO una copia del cuerpo
+═══════════════════════════════
+INSTRUCCIONES QUE DEBÉS RECONOCER
+═══════════════════════════════
+- "sacá eso" / "borrá X" / "quitá la parte de X" → ELIMINÁS esa parte
+- "cambiá X por Y" / "donde dice X poné Y" → REEMPLAZÁS
+- "agregá a [órgano]..." / "sumale que..." → AGREGÁS información
+- "completá" / "completá esa frase" / "completalo" → COMPLETÁS con tu criterio médico veterinario
+- "mejorá la narración" / "que quede mejor redactado" → REESCRIBÍS con mejor prosa médica sin cambiar contenido
+- "hacé la conclusión" / "poné la conclusión" / "completá la conclusión" → GENERÁS una conclusión como SÍNTESIS de todos los hallazgos patológicos
+- "según la tabla" / "como en la tabla" / "usá la tabla" / "según nuestro prompt" / "según nuestros patrones" → Usás las TABLAS DE REFERENCIA que te paso más abajo para completar o mejorar el texto con el estilo y vocabulario de referencia
+- "calculame el volumen" / "hacé la cuenta" → Calculás (largo × ancho × alto × 0.523) y mostrás solo medidas + resultado, SIN mostrar el 0.523
+- Cualquier otra cosa → INTERPRETÁS la intención y EJECUTÁS
 
-RESPONDÉ SOLO con JSON válido:
-{"cuerpo_informe": "informe completo modificado", "cambios_realizados": "descripción breve de qué cambiaste"}"""
+═══════════════════════════════
+LO QUE NUNCA HACÉS
+═══════════════════════════════
+- NUNCA escribís la instrucción como texto literal en el informe. Si dice "según la tabla poné hepatomegalia moderada", NO escribís "según la tabla poné hepatomegalia moderada" — escribís la descripción de hepatomegalia moderada.
+- NUNCA tocás partes del informe que la instrucción no menciona
+- NUNCA reescribís todo de cero — solo modificás lo pedido
+- NUNCA inventás datos clínicos que no estén en el informe ni en la instrucción
+
+═══════════════════════════════
+CONCLUSIÓN
+═══════════════════════════════
+Cuando te pidan la conclusión:
+- Es una SÍNTESIS diagnóstica, NO una copia del cuerpo
+- Listá cada hallazgo patológico con * precediendo cada uno
+- Incluí grado de severidad y localización
+- Al final: "* Órganos sin particularidades: [listar] sin particularidades ecográficas significativas."
+- Cerrar con: "Informe realizado por:\\nM.V. Raffo Silvina"
+
+═══════════════════════════════
+FORMATO DE RESPUESTA
+═══════════════════════════════
+Devolvé el informe COMPLETO (original + modificaciones). JSON válido sin markdown:
+{"cuerpo_informe": "informe completo modificado", "cambios_realizados": "qué cambiaste"}"""
 
 
 @app.post("/api/edit-report")
@@ -711,7 +730,18 @@ async def api_edit_report(req: EditReq):
 
     messages = [
         {"role": "system", "content": EDIT_PROMPT},
-        {"role": "user", "content": f"""INFORME ACTUAL:
+    ]
+    # Add reference tables so GPT understands "según la tabla"
+    if TABLA_HALLAZGOS:
+        tabla_txt = "TABLAS DE REFERENCIA (cuando la Dra. dice 'según la tabla', 'usá la tabla', " \
+                    "'según nuestros patrones', se refiere a ESTO — adaptá al caso real):\n\n" + \
+                    "\n\n".join(e["texto"] for e in TABLA_HALLAZGOS)
+        messages.append({"role": "system", "content": tabla_txt})
+    if FRASES_HISTORICAS:
+        messages.append({"role": "system", "content":
+            "FRASES DE ESTILO DE LA DRA (usá este vocabulario cuando pida 'mejorar narración' o 'completar'):\n- " +
+            "\n- ".join(FRASES_HISTORICAS[:50])})
+    messages.append({"role": "user", "content": f"""INFORME ACTUAL:
 ---
 Paciente datos: Tutor: {req.tutor}, Mascota: {req.mascota}, Fecha: {req.fecha}, Méd. Derivante: {req.medico_derivante}
 
@@ -799,38 +829,34 @@ async def save_report(tutor: str = Form(""), fecha: str = Form(""), mascota: str
 
 
 def extract_patterns_from_report(text):
-    """Extract reusable patterns from a completed report for learning."""
+    """Extract reusable STYLE patterns from a completed report. NOT patient data."""
     import re as _re
     patterns = {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}
 
-    # Extract phrases that appear frequently in reports
-    common_phrases = [
-        r"[Hh]allazgos sugestivos de [^.]+",
-        r"[Cc]ompatible con [^.]+",
-        r"[Ss]in particularidades [^.]+",
-        r"[Bb]ordes [^,.]+ y [^.]+",
-        r"[Pp]atrón [^.]+conservado[^.]*",
-        r"[Dd]istensión [^.]+",
-        r"[Ee]cogenicidad [^.]+",
-        r"[Tt]amaño conservado[^.]*",
+    # Only extract GENERIC phrases (no specific measurements, no patient names)
+    style_phrases = [
+        r"[Hh]allazgos sugestivos de [a-záéíóúñ ]+",
+        r"[Cc]ompatible con [a-záéíóúñ ]+",
+        r"[Bb]ordes [a-záéíóúñ,]+ y [a-záéíóúñ ]+",
+        r"[Pp]atrón [a-záéíóúñ ]+ conservado",
+        r"[Ee]cogenicidad [a-záéíóúñ ]+",
+        r"[Dd]istensión [a-záéíóúñ ]+ a expensas de [a-záéíóúñ ]+",
     ]
 
-    for pattern in common_phrases:
+    for pattern in style_phrases:
         matches = _re.findall(pattern, text)
         for m in matches:
             cleaned = m.strip().rstrip(".,;")
-            if 10 < len(cleaned) < 100:
-                patterns["frases_nuevas"].append(cleaned)
+            # Skip if contains numbers (patient-specific data)
+            if _re.search(r'\d', cleaned):
+                continue
+            # Skip if too short or too long
+            if len(cleaned) < 15 or len(cleaned) > 80:
+                continue
+            patterns["frases_nuevas"].append(cleaned)
 
-    # Extract organ descriptions as style references
-    organ_pattern = _re.findall(r'[A-ZÁÉÍÓÚÑ]{3,}:\s*([^.]+\.)', text)
-    for desc in organ_pattern:
-        desc = desc.strip()
-        if 20 < len(desc) < 200 and "particularidades" not in desc.lower():
-            patterns["frases_nuevas"].append(desc)
-
-    # Deduplicate
-    patterns["frases_nuevas"] = list(set(patterns["frases_nuevas"]))[:20]
+    # Deduplicate and limit
+    patterns["frases_nuevas"] = list(set(patterns["frases_nuevas"]))[:15]
 
     return patterns if patterns["frases_nuevas"] else None
 
@@ -878,3 +904,32 @@ async def process_all_reports():
             processed += 1
 
     return {"processed": processed, "patterns": total_patterns}
+
+@app.post("/api/cleanup-patterns")
+async def cleanup_patterns():
+    """Delete all patterns and re-extract from scratch (clean)."""
+    if not SUPABASE_URL:
+        return {"deleted": 0, "reprocessed": 0}
+
+    # Delete all existing patterns
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(
+            f"{SUPABASE_URL}/rest/v1/estilo?id=gt.0",
+            headers=supa_headers())
+    deleted = 0
+    if r.status_code in (200, 204):
+        deleted = 1
+
+    # Re-extract from all reports with the improved extractor
+    informes = await supa_get("informes", "select=id,cuerpo_informe&order=created_at.desc&limit=100")
+    total = 0
+    if isinstance(informes, list):
+        for inf in informes:
+            texto = inf.get("cuerpo_informe", "")
+            if texto and len(texto) > 50:
+                patterns = extract_patterns_from_report(texto)
+                if patterns:
+                    await save_patterns(patterns)
+                    total += len(patterns.get("frases_nuevas", []))
+
+    return {"deleted": deleted, "new_patterns": total}
