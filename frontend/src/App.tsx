@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo, processAllReports, editReport } from './api/client'
+import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo, processAllReports, editReport, cleanupPatterns } from './api/client'
 
 type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -611,6 +611,16 @@ ${transcription}`
               }catch(e:any){setError(e.message)}
               setProcessing(false)
             }} disabled={processing}>{processing?<><Loader size={16} className="spin"/> Procesando...</>:<><TrendingUp size={16}/> Procesar todos los informes</>}</button>
+            <button className="btn btn-orange" onClick={async()=>{
+              if(!confirm('¿Borrar todos los patrones actuales y re-extraer desde cero?'))return
+              setProcessing(true);setError('');setSuccess('')
+              try{
+                const r=await cleanupPatterns()
+                setSuccess(`Patrones limpiados. ${r.new_patterns} patrones nuevos extraídos (sin basura).`)
+                getEstilo().then(setEstiloData)
+              }catch(e:any){setError(e.message)}
+              setProcessing(false)
+            }} disabled={processing}><X size={16}/> Limpiar y reprocesar</button>
             <button className="btn btn-glass" onClick={()=>getEstilo().then(setEstiloData)}><Search size={16}/> Actualizar vista</button>
           </div>
         )}
