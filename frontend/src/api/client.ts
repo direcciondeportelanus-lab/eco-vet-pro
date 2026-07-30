@@ -84,3 +84,9 @@ export async function editReport(currentReport: string, instruction: string, pro
   if (!res.ok) { const e = await res.json().catch(()=>({detail:'Error al editar'})); throw new Error(e.detail || 'Error') }
   return res.json()
 }
+
+export async function cleanupPatterns() {
+  const res = await fetch(`${API_BASE}/cleanup-patterns`, { method: 'POST' })
+  if (!res.ok) throw new Error('Error al limpiar patrones')
+  return res.json()
+}
