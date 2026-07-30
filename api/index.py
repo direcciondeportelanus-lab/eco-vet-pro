@@ -658,6 +658,93 @@ async def api_structure(req: StructureReq):
         await save_patterns(result["estilo_detectado"])
     return result
 
+
+class EditReq(BaseModel):
+    current_report: str
+    instruction: str
+    provider: str = "openai"
+    api_key: str
+    tutor: str = ""
+    fecha: str = ""
+    mascota: str = ""
+    medico_derivante: str = ""
+
+    @field_validator("api_key")
+    @classmethod
+    def limpiar_api_key_edit(cls, v):
+        return v.strip().lstrip("\ufeff")
+
+EDIT_PROMPT = """Sos el asistente de edición de informes ecográficos de la Dra. Silvina Raffo.
+
+CONTEXTO: Te paso un informe ecográfico YA REDACTADO y una INSTRUCCIÓN de la Dra.
+
+TU TRABAJO:
+1. Recibís el informe actual completo
+2. Recibís una instrucción de voz de la Dra. (puede ser confusa por ser dictado)
+3. Interpretás QUÉ QUIERE que hagas:
+   - "sacá eso" / "borrá tal cosa" → eliminás esa parte del informe
+   - "cambiá X por Y" / "donde dice X poné Y" → reemplazás
+   - "agregá a [órgano] que..." → agregás info a ese órgano
+   - "completá [órgano]" / "completá esa frase" → usás tu conocimiento médico para completar
+   - "poné la conclusión" / "hacé la conclusión" → generás la conclusión como síntesis
+   - "el volumen de X por Y por Z" → calculás (largo × ancho × alto × 0.523) y mostrás resultado sin el 0.523
+   - Cualquier otra instrucción → interpretás y ejecutás
+
+REGLAS CRÍTICAS:
+- NUNCA toques partes del informe que la instrucción no menciona
+- NUNCA reescribas todo de cero — solo modificá lo que se pide
+- Si la instrucción es ambigua, hacé lo más razonable
+- Devolvé el informe COMPLETO (el original + las modificaciones)
+- Mantené el formato: órganos en MAYÚSCULAS, medidas con unidades, etc.
+- La CONCLUSIÓN es una SÍNTESIS de hallazgos, NO una copia del cuerpo
+
+RESPONDÉ SOLO con JSON válido:
+{"cuerpo_informe": "informe completo modificado", "cambios_realizados": "descripción breve de qué cambiaste"}"""
+
+
+@app.post("/api/edit-report")
+async def api_edit_report(req: EditReq):
+    """Edit an existing report with voice/text instructions."""
+    cfg = PROVIDERS.get(req.provider)
+    if not cfg:
+        raise HTTPException(400, "Proveedor no soportado")
+
+    messages = [
+        {"role": "system", "content": EDIT_PROMPT},
+        {"role": "user", "content": f"""INFORME ACTUAL:
+---
+Paciente datos: Tutor: {req.tutor}, Mascota: {req.mascota}, Fecha: {req.fecha}, Méd. Derivante: {req.medico_derivante}
+
+{req.current_report}
+---
+
+INSTRUCCIÓN DE LA DRA:
+{req.instruction}"""}
+    ]
+
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(cfg["url"],
+            headers={"Authorization": f"Bearer {req.api_key}", "Content-Type": "application/json"},
+            json={"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": 4000})
+
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"LLM error: {r.json().get('error',{}).get('message', r.text)}")
+
+    content = r.json()["choices"][0]["message"]["content"]
+    try:
+        result = json.loads(content.replace("```json", "").replace("```", "").strip())
+    except:
+        result = {"cuerpo_informe": content, "cambios_realizados": "respuesta no estructurada"}
+
+    # Post-process volume
+    if result.get("cuerpo_informe"):
+        import re as _re
+        body = result["cuerpo_informe"]
+        body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
+        result["cuerpo_informe"] = body
+
+    return result
+
 @app.post("/api/generate-pdf")
 async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
                   medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
