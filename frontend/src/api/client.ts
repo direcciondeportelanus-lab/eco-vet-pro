@@ -67,3 +67,20 @@ export async function processAllReports() {
   if (!res.ok) throw new Error('Error al procesar informes')
   return res.json()
 }
+
+export async function editReport(currentReport: string, instruction: string, provider: string, apiKey: string, patientData: Record<string,string> = {}) {
+  const res = await fetch(`${API_BASE}/edit-report`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      current_report: currentReport,
+      instruction: instruction,
+      provider, api_key: apiKey,
+      tutor: patientData.tutor || '',
+      fecha: patientData.fecha || '',
+      mascota: patientData.mascota || '',
+      medico_derivante: patientData.medico_derivante || '',
+    }),
+  })
+  if (!res.ok) { const e = await res.json().catch(()=>({detail:'Error al editar'})); throw new Error(e.detail || 'Error') }
+  return res.json()
+}
