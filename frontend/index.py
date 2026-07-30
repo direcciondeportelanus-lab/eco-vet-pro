@@ -1,0 +1,935 @@
+"""
+Eco Vet Pro — Backend FastAPI
+Con Supabase (PostgreSQL) + Whisper + LLM
+"""
+import os, io, json, textwrap
+from datetime import datetime
+from pathlib import Path
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, field_validator
+import httpx
+
+BASE_DIR = Path(__file__).parent.parent
+TEMPLATE_PATH = BASE_DIR / "plantilla.pdf"
+UPLOADS_DIR = Path("/tmp/eco_vet_uploads")
+
+# ── Supabase config (env vars) ──
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY", "")
+
+def supa_headers():
+    return {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation"
+    }
+
+async def supa_get(table, params=""):
+    async with httpx.AsyncClient() as c:
+        r = await c.get(f"{SUPABASE_URL}/rest/v1/{table}?{params}", headers=supa_headers())
+    return r.json() if r.status_code == 200 else []
+
+async def supa_post(table, data):
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=supa_headers(), json=data)
+    return r.json() if r.status_code in (200, 201) else None
+
+async def supa_upsert(table, data):
+    h = {**supa_headers(), "Prefer": "resolution=merge-duplicates,return=representation"}
+    async with httpx.AsyncClient() as c:
+        r = await c.post(f"{SUPABASE_URL}/rest/v1/{table}", headers=h, json=data)
+    return r.json() if r.status_code in (200, 201) else None
+
+# ── Style learning ──
+async def load_style():
+    rows = await supa_get("estilo", "select=tipo,clave,valor")
+    style = {"frases_habituales": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}
+    for r in (rows if isinstance(rows, list) else []):
+        if r["tipo"] == "frase":
+            style["frases_habituales"].append(r["valor"])
+        elif r["tipo"] == "termino":
+            style["terminos_preferidos"][r.get("clave", "")] = r["valor"]
+        elif r["tipo"] == "correccion":
+            style["correcciones_frecuentes"].append(r["valor"])
+    return style
+
+async def save_patterns(patterns):
+    if not patterns:
+        return
+    rows = []
+    for f in (patterns.get("frases_nuevas") or []):
+        rows.append({"tipo": "frase", "clave": None, "valor": f})
+    for k, v in (patterns.get("terminos_preferidos") or {}).items():
+        rows.append({"tipo": "termino", "clave": k, "valor": v})
+    for c in (patterns.get("correcciones_frecuentes") or []):
+        rows.append({"tipo": "correccion", "clave": None, "valor": c})
+    if rows:
+        await supa_upsert("estilo", rows)
+
+# ── LLM ──
+SYSTEM_PROMPT = """Sos el asistente oficial de redacción de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901), veterinaria. Fecha de hoy: """ + datetime.now().strftime("%d/%m/%Y") + """.
+
+═══════════════════════════════
+MODO CONTINUACIÓN
+═══════════════════════════════
+Si el mensaje del usuario empieza con "MODO CONTINUACIÓN -- INSTRUCCIONES ESTRICTAS":
+esa instrucción tiene PRIORIDAD ABSOLUTA sobre las reglas generales de redacción de
+abajo. En ese modo NO redactás de cero: tomás el informe ya armado tal cual viene,
+integrás solo lo puntual que se pide, y devolvés todo lo demás sin tocar una sola
+palabra.
+
+═══════════════════════════════
+REGLA #0 — LO QUE NUNCA HACÉS
+═══════════════════════════════
+- NUNCA te bloqueás ni dejás de redactar porque una palabra, nombre propio, localidad o
+  término no te resulte familiar. Los patrones, la tabla y las frases guardadas son una
+  AYUDA de referencia, no una jaula: si algo no está ahí, usás tu propio criterio e
+  inteligencia para interpretarlo y redactarlo de todos modos. Nunca dejes algo sin
+  redactar ni le pidas a la Dra. que lo aclare salvo que sea información clínica
+  imposible de inferir.
+- NUNCA inventás datos, hallazgos, medidas ni diagnósticos que no estén en el dictado.
+- NUNCA resumís. Tu trabajo es ORDENAR, CLARIFICAR y REDACTAR con precisión lo que la Dra. dictó. Cada hallazgo, cada medida, cada detalle que ella diga debe quedar en el informe. No omitas nada.
+- NUNCA cambiás el significado clínico.
+- Si falta un dato, dejá el campo vacío.
+- Si dice "hoy", usá la fecha de hoy.
+
+═══════════════════════════════
+DICCIONARIO MÉDICO VETERINARIO
+═══════════════════════════════
+Whisper suele transcribir mal estos términos. SIEMPRE corregí:
+- "vaso" → BAZO (órgano abdominal)
+- "vesiga", "besiga", "veciga" → VEJIGA
+- "prostata" → PRÓSTATA
+- "riñon" → RIÑÓN
+- "higado" → HÍGADO
+- "vesicula" → VESÍCULA BILIAR
+- "eco grafía", "eco grafia" → ecografía
+- "anecoico" → anecóico
+- "hipoecoico" → hipoecóico
+- "hiperecoico" → hiperecóico
+- "parenquima" → parénquima
+- "cortico medular" → córtico-medular
+- "linfo nódulos", "linfono dulos" → linfonódulos
+- "linfodanopatias" → linfadenopatías
+- "cisitits", "sistitis" → cistitis
+- "colecistitis" → colecistitis
+- "colestosis" → colestasis
+- "neoformacion" → neoformación
+- "hiperplacia" → hiperplasia
+Aplicá siempre acentos y ortografía médica correcta.
+
+═══════════════════════════════
+INTERPRETACIÓN DEL DICTADO
+═══════════════════════════════
+1) DATOS DEL PACIENTE — "paciente", "tutor", "dueño", "mascota", "derivado por", "lo manda"
+   → Ubicás cada dato en: tutor / fecha / mascota / medico_derivante.
+
+2) CUERPO DEL INFORME — "hallazgos", "se observa", "a nivel de", "conclusión", "impresión diagnóstica"
+   → Orden fijo: INDICACIÓN CLÍNICA → hallazgos por órgano → CONCLUSIÓN
+   → Agrupá por órgano aunque los dicte salteados o vuelva a uno ya mencionado.
+   → NO resumís: transcribís todo lo que dijo, con mejor redacción y orden.
+   → SIEMPRE escribí la CONCLUSIÓN al final. Si la Dra. no la dictó, escribí: "CONCLUSIÓN: (pendiente de completar por la profesional)."
+
+3) CÁLCULOS — Si dice "haceme el cálculo", "calculame", "el volumen de":
+   REGLAS DE FORMATO PARA NÚMEROS Y MEDIDAS:
+   - CADA número debe llevar su unidad al lado: 3,2 cm × 2,1 cm × 1,2 cm (NO: 3,2 x 2,1 x 1,2 cm)
+   - Si la Dra. dice los valores en mm, cada número lleva mm. Si dice cm, cada uno lleva cm.
+   - Volumen: mostrá solo las 3 medidas con unidad y el resultado. NUNCA muestres el factor 0,523 en el texto.
+     Ejemplo correcto: "Dimensiones de 3,2 cm × 2,1 cm × 1,2 cm. Volumen estimado: 4,22 cm³."
+     Ejemplo INCORRECTO: "3,2 x 2,1 x 1,2 x 0,523 = 4,22 cm³" (NO mostrar el 0,523)
+   - Internamente calculá: largo × ancho × alto × 0,523 = resultado en cm³
+   - Índice de resistividad renal (IR) = (Vmáx - Vmín) / Vmáx. Mostrá valores y resultado.
+   - Relación córtico-medular: valor corteza / valor médula
+
+4) COMANDOS — Respondé a órdenes directas:
+   - "corregí eso" / "cambiá lo último" → corregís la última parte
+   - "borrá eso" / "sacá eso" → eliminás lo último
+   - "agregá a..." → agregás al órgano indicado
+
+═══════════════════════════════
+FORMATO DEL TEXTO
+===============================
+- PRIMERA LINEA SIEMPRE: "Paciente: [nombre], especie [especie], [sexo], [edad]."
+- Si la Dra. hace una introduccion o resena antes de los organos, ponerla como segundo parrafo.
+- Luego INDICACION CLINICA si fue dictada
+- Cada organo: nombre en MAYUSCULAS seguido de dos puntos
+- ORDEN DE ORGANOS (respetar siempre este orden):
+  PERITONEO, LINFONODULOS, VEJIGA, RINONES, GLANDULAS ADRENALES,
+  ESTOMAGO, INTESTINO DELGADO, INTESTINO GRUESO, BAZO, HIGADO,
+  VESICULA BILIAR, PANCREAS
+- Si un organo no fue mencionado, escribir: "ORGANO: Sin particularidades ecograficas evidentes."
+- Separar cada organo con una linea en blanco
+- Oraciones completas con puntuacion correcta
+- Tono: profesional, tercera persona ("se observa", "se evidencia", "presenta")
+- FORMATO DE MEDIDAS: cada numero SIEMPRE lleva su unidad al lado.
+  Si dicta en mm: "39 mm × 25 mm" (NO "39 x 25 mm")
+  Si dicta en cm: "3,2 cm × 2,1 cm × 1,2 cm" (NO "3,2 x 2,1 x 1,2 cm")
+  Los numeros con unidades son datos importantes del informe.
+
+CONCLUSION (SIEMPRE al final, debe ser COMPLETA y DETALLADA):
+- La conclusión NUNCA es una copia ni una transcripción casi idéntica del cuerpo del
+  informe. Es una SÍNTESIS: extraés el diagnóstico o impresión de cada hallazgo
+  patológico, en lenguaje conciso, sin repetir las descripciones morfológicas
+  detalladas (medidas, ecogenicidad, bordes, etc.) que ya están en el cuerpo. Si en
+  el cuerpo describiste 4 líneas sobre el hígado, en la conclusión va UNA línea con
+  el diagnóstico de ese hallazgo, no el detalle completo de nuevo.
+- Título: CONCLUSION
+- Enumerar TODOS los hallazgos patologicos encontrados, cada uno precedido por *
+- Incluir grado de severidad cuando corresponda (leve, moderado, severo)
+- Incluir localizacion cuando corresponda
+- Mencionar hallazgos secundarios relevantes
+- Al final: "* Organos sin particularidades: [listar organos normales] sin particularidades ecograficas significativas."
+- Cerrar con: "Informe realizado por:\\nM.V. Raffo Silvina"
+- La conclusion NO debe ser un resumen breve. Debe ser un listado completo de todos los hallazgos para que el medico derivante tenga claridad.
+
+EJEMPLO DE ORGANO NORMAL:
+"PERITONEO: Sin particularidades ecograficas evidentes."
+
+EJEMPLO DE ORGANO CON HALLAZGO:
+"HIGADO: Hepatomegalia moderada. Bordes lisos, parenquima homogeneo con disminucion de la ecogenicidad en forma difusa, patron portal reforzado y venas hepaticas conservadas. Hallazgos sugestivos de hepatopatia inflamatoria aguda."
+
+EJEMPLO DE RINONES:
+"RINONES: * Rinon izquierdo: 41 x 25 mm. * Rinon derecho: 45 x 24 mm. Ambos conservan caracteristicas ecograficas normales."
+
+EJEMPLO DE CONCLUSION COMPLETA:
+"CONCLUSION\\n* Hepatopatia inflamatoria aguda con hepatomegalia moderada a severa.\\n* Colestasis con barro biliar y paredes engrosadas, hallazgos sugestivos de colecistitis aguda.\\n* Nefropatia cronica difusa de probable origen inflamatorio en grado leve a moderado.\\n* Gastritis aguda con paredes engrosadas.\\n* Enteritis aguda en intestino delgado.\\n* Linfadenopatia mesenterica reactiva / infiltrativa difusa.\\n* Sedimento celular vesical.\\n* Organos sin particularidades: bazo, pancreas, intestino grueso y peritoneo sin particularidades ecograficas significativas.\\n\\nInforme realizado por:\\nM.V. Raffo Silvina"
+
+===============================
+RESPUESTA
+===============================
+RESPONDE SOLO con JSON valido. Sin markdown. Sin backticks. Sin texto adicional.
+{"tutor":"","fecha":"","mascota":"","medico_derivante":"","cuerpo_informe":"texto completo del informe","estilo_detectado":{"frases_nuevas":[],"terminos_preferidos":{},"correcciones_frecuentes":[]}}"""
+
+# ── Banco de frases y patrones de redacción reales de la Dra. ──
+# Se lee desde un archivo satélite (igual que el glosario), para poder
+# actualizarlo sin tocar el código. Son patrones de estilo y vocabulario
+# (sin nombres de pacientes ni medidas de casos puntuales) extraídos de
+# informes históricos.
+FRASES_PATH = BASE_DIR / "data" / "frases_historicas.json"
+
+def load_frases_historicas():
+    if FRASES_PATH.exists():
+        return json.loads(FRASES_PATH.read_text(encoding="utf-8"))
+    return []
+
+FRASES_HISTORICAS = load_frases_historicas()
+
+# ── Tabla de hallazgos de referencia (tablas_eco.txt procesado) ──
+# Cuando la Dra. dice "hepatomegalia tal de la tabla" (o similar), esto le da a GPT
+# el texto de referencia completo para ADAPTAR -- no copiar literal. GPT ajusta
+# medidas, severidad o lo que la Dra. pida distinto ("cambiale el tamaño a X mm").
+TABLA_PATH = BASE_DIR / "data" / "tabla_hallazgos.json"
+
+def load_tabla_hallazgos():
+    if TABLA_PATH.exists():
+        return json.loads(TABLA_PATH.read_text(encoding="utf-8"))
+    return []
+
+TABLA_HALLAZGOS = load_tabla_hallazgos()
+
+PROVIDERS = {
+    "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "llama-3.3-70b-versatile",
+             "whisper_url": "https://api.groq.com/openai/v1/audio/transcriptions", "whisper_model": "whisper-large-v3"},
+    "openai": {"url": "https://api.openai.com/v1/chat/completions", "model": "gpt-4o-mini",
+               "whisper_url": "https://api.openai.com/v1/audio/transcriptions", "whisper_model": "whisper-1"},
+}
+
+GLOSARIO_PATH = BASE_DIR / "data" / "glosario_veterinario.json"
+
+def load_glosario():
+    if GLOSARIO_PATH.exists():
+        return json.loads(GLOSARIO_PATH.read_text(encoding="utf-8"))
+    return {"whisper_prompt": "", "correcciones_whisper": {}}
+
+def corregir_transcripcion(texto):
+    """Post-procesamiento: corrige errores comunes de Whisper usando el glosario completo."""
+    glosario = load_glosario()
+    correcciones = glosario.get("correcciones_whisper", {})
+    resultado = texto
+    # Sort by length descending so multi-word corrections match first
+    for error, correccion in sorted(correcciones.items(), key=lambda x: len(x[0]), reverse=True):
+        import re as _re
+        # Case-insensitive replacement, preserving sentence position
+        pattern = _re.compile(_re.escape(error), _re.IGNORECASE)
+        resultado = pattern.sub(correccion, resultado)
+    return resultado
+
+async def transcribe_audio(provider, api_key, audio_bytes, filename):
+    cfg = PROVIDERS.get(provider)
+    if not cfg:
+        raise HTTPException(400, "Proveedor no soportado")
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'webm'
+    mime_map = {'mp4': 'audio/mp4', 'wav': 'audio/wav', 'webm': 'audio/webm', 'm4a': 'audio/mp4', 'ogg': 'audio/ogg'}
+    mime = mime_map.get(ext, 'audio/webm')
+    # Load whisper prompt from glossary
+    glosario = load_glosario()
+    whisper_prompt = glosario.get("whisper_prompt", "")
+    async with httpx.AsyncClient(timeout=60.0) as c:
+        r = await c.post(cfg["whisper_url"],
+            headers={"Authorization": f"Bearer {api_key}"},
+            files={"file": (filename, audio_bytes, mime)},
+            data={"model": cfg["whisper_model"], "language": "es", "prompt": whisper_prompt})
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"Whisper error: {r.text}")
+    raw_text = r.json().get("text", "")
+    # Post-process: correct common Whisper errors
+    corrected = corregir_transcripcion(raw_text)
+    return corrected
+
+async def call_llm(provider, api_key, text, style):
+    cfg = PROVIDERS.get(provider)
+    if not cfg:
+        raise HTTPException(400, "Proveedor no soportado")
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if FRASES_HISTORICAS:
+        banco = "BANCO DE FRASES Y PATRONES DE REDACCIÓN HABITUALES DE LA DRA. " \
+                "(usalos como referencia de vocabulario y estilo cuando el caso lo amerite, " \
+                "no los repitas literal si no corresponde al hallazgo real):\n- " + \
+                "\n- ".join(FRASES_HISTORICAS)
+        messages.append({"role": "system", "content": banco})
+    if TABLA_HALLAZGOS:
+        tabla_txt = "TABLA DE HALLAZGOS DE REFERENCIA POR ÓRGANO. Si la Dra. dice algo como " \
+                    "'hepatomegalia leve de la tabla' o pide reutilizar un patrón conocido, " \
+                    "buscá la entrada que mejor matchee y ADAPTALA a lo que pida (medidas, " \
+                    "severidad, lo que cambie) -- nunca la copies literal si el caso real difiere:\n\n" + \
+                    "\n\n".join(e["texto"] for e in TABLA_HALLAZGOS)
+        messages.append({"role": "system", "content": tabla_txt})
+    if style and any(style.values()):
+        messages.append({"role": "system", "content": f"ESTILO APRENDIDO:\n{json.dumps(style, ensure_ascii=False)}"})
+    messages.append({"role": "user", "content": text})
+
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(cfg["url"],
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": 3000})
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"LLM error: {r.json().get('error',{}).get('message', r.text)}")
+
+    content = r.json()["choices"][0]["message"]["content"]
+    try:
+        result = json.loads(content.replace("```json", "").replace("```", "").strip())
+    except:
+        result = {"tutor": "", "fecha": "", "mascota": "", "medico_derivante": "",
+                "cuerpo_informe": content, "estilo_detectado": {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}}
+
+    # Post-process: fix volume formulas (remove 0.523 from display)
+    if result.get("cuerpo_informe"):
+        import re as _re
+        body = result["cuerpo_informe"]
+        # Remove any display of x 0.523 or × 0.523 or x 0,523
+        body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
+        # Fix "= number" to "= number cm³" if missing unit
+        body = _re.sub(r'=\s*(\d+[.,]\d+)\s*\.', r'= \1 cm³.', body)
+        result["cuerpo_informe"] = body
+
+    # Red de seguridad: la firma SIEMPRE debe aparecer, la pida o no la pida la Dra.
+    cuerpo = result.get("cuerpo_informe", "") or ""
+    if "M.V. Raffo Silvina" not in cuerpo:
+        cuerpo = cuerpo.rstrip() + "\n\nInforme realizado por:\nM.V. Raffo Silvina"
+        result["cuerpo_informe"] = cuerpo
+
+    return result
+
+# ── PDF ──
+def generate_pdf(data, img_paths, font_size_option=10, margin_level=0, line_spacing=1):
+    import re
+    from pypdf import PdfReader, PdfWriter
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.colors import Color
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.utils import ImageReader
+
+    template = PdfReader(str(TEMPLATE_PATH))
+    writer = PdfWriter()
+
+    buf1 = io.BytesIO()
+    c = canvas.Canvas(buf1, pagesize=A4)
+    PAGE_W, PAGE_H = A4
+
+    # Colors
+    PURPLE = Color(0.25, 0.05, 0.4)
+    BLACK = Color(0.08, 0.08, 0.08)
+
+    # ── Layout constants ──
+    LEFT_X = 55 - (margin_level * 15)  # 0=55, 1=40, 2=25
+    RIGHT_X = 540
+    TEXT_W = RIGHT_X - LEFT_X
+    font_size = max(8, min(15, font_size_option))
+    CHARS_PER_LINE = int(TEXT_W / (font_size * 0.52))
+    LINE_H = font_size + (4 if line_spacing == 1 else 0)
+    ORGAN_GAP = 10 if line_spacing == 1 else 4
+    EMPTY_GAP = 10 if line_spacing == 1 else 3
+    BODY_START_Y = 620
+
+    # ── Header fields in BOLD ──
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColor(PURPLE)
+    fields = {"tutor": (175, 727), "fecha": (445, 727), "mascota": (155, 705), "medico_derivante": (385, 705)}
+    for k, (x, y) in fields.items():
+        v = data.get(k, "")
+        if v:
+            # Reduce font if text is too long for the space
+            fsize = 11
+            if k == "medico_derivante" and len(v) > 20:
+                fsize = 9
+            c.setFont("Helvetica-Bold", fsize)
+            c.drawString(x, y, v)
+
+    # ── Helper: detect if line has measurements to bold+italic ──
+    MEASURE_RE = re.compile(r'(\d+[\.,]?\d*\s*(?:×|x)\s*\d+[\.,]?\d*(?:\s*(?:×|x)\s*\d+[\.,]?\d*)?\s*(?:mm|cm|cm³|cm3)|\d+[\.,]?\d*\s*(?:mm|cm|cm³|cm3))')
+
+    def draw_line_with_formatting(canvas_obj, text, x, y, font_size, is_justified, is_last_line):
+        """Draw a line with bold+italic for measurements."""
+        parts = MEASURE_RE.split(text)
+        if len(parts) == 1:
+            # No measurements, draw normally
+            if is_justified and not is_last_line and len(text) > 50:
+                _draw_justified(canvas_obj, text, x, y, font_size)
+            else:
+                canvas_obj.drawString(x, y, text)
+        else:
+            # Has measurements - draw mixed
+            cx = x
+            for i, part in enumerate(parts):
+                if not part:
+                    continue
+                if MEASURE_RE.match(part):
+                    canvas_obj.setFont("Helvetica-BoldOblique", font_size)
+                    canvas_obj.drawString(cx, y, part)
+                    cx += canvas_obj.stringWidth(part, "Helvetica-BoldOblique", font_size)
+                    canvas_obj.setFont("Helvetica", font_size)
+                else:
+                    canvas_obj.drawString(cx, y, part)
+                    cx += canvas_obj.stringWidth(part, "Helvetica", font_size)
+
+    def _draw_justified(canvas_obj, text, x, y, font_size):
+        """Draw text justified to fill TEXT_W."""
+        words = text.split()
+        if len(words) <= 1:
+            canvas_obj.drawString(x, y, text)
+            return
+        total_text_w = sum(canvas_obj.stringWidth(w, canvas_obj._fontname, font_size) for w in words)
+        total_space = TEXT_W - total_text_w
+        if total_space < 0 or total_space > TEXT_W * 0.5:
+            canvas_obj.drawString(x, y, text)
+            return
+        space_w = total_space / (len(words) - 1)
+        cx = x
+        for word in words:
+            canvas_obj.drawString(cx, y, word)
+            cx += canvas_obj.stringWidth(word, canvas_obj._fontname, font_size) + space_w
+
+    # ── Body text with auto-pagination ──
+    body = data.get("cuerpo_informe", "")
+    overlay_buffers = []  # list of overlay BytesIO for each page
+    current_buf = buf1
+    page_num = 1
+    BOTTOM_MARGIN = 70
+    CONTINUATION_TOP = 698  # page 2 template has more space (no header fields/INFORME bar)
+
+    def new_page():
+        """Finish current overlay and start a new one for continuation."""
+        nonlocal c, current_buf, y, page_num
+        c.save()
+        current_buf.seek(0)
+        overlay_buffers.append(current_buf)
+        page_num += 1
+        current_buf = io.BytesIO()
+        c = canvas.Canvas(current_buf, pagesize=A4)
+        y = CONTINUATION_TOP
+
+    def check_y(needed=LINE_H):
+        """If not enough space, create a new page."""
+        nonlocal y
+        if y - needed < BOTTOM_MARGIN:
+            new_page()
+
+    if body:
+        y = BODY_START_Y
+        font_size = 10
+
+        for para in body.split("\n"):
+            if para.strip() == "":
+                y -= EMPTY_GAP
+                continue
+
+            stripped = para.strip()
+
+            # Detect paragraph type
+            is_conclusion_header = stripped.upper().startswith("CONCLUSI")
+            is_section_header = stripped.isupper() and len(stripped) < 50
+            is_conclusion_item = stripped.startswith("*")
+            is_signature = stripped.startswith("Informe realizado") or stripped.startswith("M.V.")
+
+            # Organ detection
+            is_organ_header = False
+            if ":" in stripped and not is_conclusion_header and not is_section_header:
+                colon_pos = stripped.index(":")
+                before_colon = stripped[:colon_pos].strip()
+                if before_colon.isupper() and len(before_colon) < 35 and colon_pos < 35:
+                    is_organ_header = True
+
+            if is_conclusion_header or is_section_header:
+                check_y(LINE_H + 12)
+                c.setFont("Helvetica-Bold", 12)
+                c.setFillColor(PURPLE)
+                y -= 8
+                c.drawString(LEFT_X, y, stripped)
+                y -= LINE_H + 4
+                c.setFont("Helvetica", font_size)
+                c.setFillColor(BLACK)
+                continue
+
+            if is_organ_header:
+                colon_idx = stripped.index(":")
+                organ_name = stripped[:colon_idx + 1]
+                organ_text = stripped[colon_idx + 1:].strip()
+                check_y(LINE_H + ORGAN_GAP)
+                y -= ORGAN_GAP
+
+                c.setFont("Helvetica-Bold", 11)
+                c.setFillColor(PURPLE)
+                c.drawString(LEFT_X, y, organ_name)
+                organ_w = c.stringWidth(organ_name + " ", "Helvetica-Bold", 11)
+
+                if organ_text:
+                    c.setFont("Helvetica", font_size)
+                    c.setFillColor(BLACK)
+                    remaining_w = TEXT_W - organ_w
+                    remaining_chars = int(remaining_w / (c.stringWidth("a", "Helvetica", font_size)))
+
+                    first_wrap = textwrap.wrap(organ_text, width=remaining_chars) or [""]
+                    draw_line_with_formatting(c, first_wrap[0], LEFT_X + organ_w, y, font_size, False, len(first_wrap) <= 1)
+                    y -= LINE_H
+
+                    if len(first_wrap) > 1:
+                        rest_text = organ_text[len(first_wrap[0]):].strip()
+                        rest_lines = textwrap.wrap(rest_text, width=CHARS_PER_LINE) or []
+                        for li, line in enumerate(rest_lines):
+                            check_y()
+                            c.setFont("Helvetica", font_size)
+                            draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, li == len(rest_lines) - 1)
+                            y -= LINE_H
+                else:
+                    y -= LINE_H
+                continue
+
+            if is_conclusion_item:
+                c.setFont("Helvetica-Bold", font_size)
+                c.setFillColor(BLACK)
+                wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
+                for li, line in enumerate(wrapped):
+                    check_y()
+                    c.drawString(LEFT_X, y, line)
+                    y -= LINE_H
+                c.setFont("Helvetica", font_size)
+                continue
+
+            if is_signature:
+                check_y()
+                c.setFont("Helvetica-Bold", 10)
+                c.setFillColor(PURPLE)
+                text_w = c.stringWidth(stripped, "Helvetica-Bold", 10)
+                c.drawString(RIGHT_X - text_w, y, stripped)
+                y -= LINE_H + 2
+                c.setFont("Helvetica", font_size)
+                c.setFillColor(BLACK)
+                continue
+
+            # Regular paragraph
+            c.setFont("Helvetica", font_size)
+            c.setFillColor(BLACK)
+            wrapped = textwrap.wrap(stripped, width=CHARS_PER_LINE) or [stripped]
+            for li, line in enumerate(wrapped):
+                check_y()
+                is_last = (li == len(wrapped) - 1)
+                draw_line_with_formatting(c, line, LEFT_X, y, font_size, True, is_last)
+                y -= LINE_H
+
+    # Finish last overlay
+    c.save()
+    current_buf.seek(0)
+    overlay_buffers.append(current_buf)
+
+    # ══════════════════════════════════════════════
+    # PAGE ASSEMBLY — 3-page template logic:
+    # Template page 0 = Page 1 (header fields + INFORME + text)
+    # Template page 1 = Page 2 (continuation text, no header fields)
+    # Template page 2 = Page 3 (IMÁGENES, 3x3 grid)
+    # ══════════════════════════════════════════════
+
+    # ── Text pages ──
+    for i, obuf in enumerate(overlay_buffers):
+        if i == 0:
+            pg = template.pages[0]  # Page 1 with header fields
+        else:
+            # Continuation pages use page 2 template (no header fields)
+            template_copy = PdfReader(str(TEMPLATE_PATH))
+            pg = template_copy.pages[1] if len(template_copy.pages) > 1 else template_copy.pages[0]
+        pg.merge_page(PdfReader(obuf).pages[0])
+        writer.add_page(pg)
+
+    # ── Image pages (page 3 template, 3x3 grid, up to 18 images) ──
+    if img_paths and len(template.pages) > 2:
+        IMGS_PER_PAGE = 9
+        IMG_W = 145
+        IMG_H = 175
+        GAP_X = 10
+        GAP_Y = 10
+        GRID_LEFT = 80
+        GRID_TOP = 680  # below IMÁGENES bar
+
+        # Calculate 3x3 positions
+        def get_positions():
+            positions = []
+            for row in range(3):
+                for col in range(3):
+                    x = GRID_LEFT + col * (IMG_W + GAP_X)
+                    y = GRID_TOP - (row + 1) * (IMG_H + GAP_Y) + GAP_Y
+                    positions.append((x, y))
+            return positions
+
+        positions = get_positions()
+
+        # Split images into pages of 9
+        for page_start in range(0, len(img_paths), IMGS_PER_PAGE):
+            page_images = img_paths[page_start:page_start + IMGS_PER_PAGE]
+
+            img_buf = io.BytesIO()
+            ci = canvas.Canvas(img_buf, pagesize=A4)
+
+            for idx, p in enumerate(page_images):
+                try:
+                    x, y = positions[idx]
+                    ci.drawImage(ImageReader(p), x, y, width=IMG_W, height=IMG_H, preserveAspectRatio=True)
+                except Exception as e:
+                    print(f"Img error {idx}: {e}")
+
+            ci.save()
+            img_buf.seek(0)
+
+            # Use page 3 template for each image page
+            template_copy = PdfReader(str(TEMPLATE_PATH))
+            img_page = template_copy.pages[2]
+            img_page.merge_page(PdfReader(img_buf).pages[0])
+            writer.add_page(img_page)
+
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+# ── App ──
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    yield
+
+app = FastAPI(lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+class StructureReq(BaseModel):
+    transcription: str
+    provider: str = "openai"
+    api_key: str
+
+    @field_validator("api_key")
+    @classmethod
+    def limpiar_api_key(cls, v):
+        return v.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
+
+@app.post("/api/whisper")
+async def api_whisper(audio: UploadFile = File(...), provider: str = Form("openai"), api_key: str = Form("")):
+    api_key = api_key.strip().lstrip("\ufeff")  # saca BOM y espacios invisibles
+    audio_bytes = await audio.read()
+    text = await transcribe_audio(provider, api_key, audio_bytes, audio.filename or "audio.webm")
+    return {"text": text}
+
+@app.post("/api/structure")
+async def api_structure(req: StructureReq):
+    style = await load_style()
+    result = await call_llm(req.provider, req.api_key, req.transcription, style)
+    if result.get("estilo_detectado"):
+        await save_patterns(result["estilo_detectado"])
+    return result
+
+
+class EditReq(BaseModel):
+    current_report: str
+    instruction: str
+    provider: str = "openai"
+    api_key: str
+    tutor: str = ""
+    fecha: str = ""
+    mascota: str = ""
+    medico_derivante: str = ""
+
+    @field_validator("api_key")
+    @classmethod
+    def limpiar_api_key_edit(cls, v):
+        return v.strip().lstrip("\ufeff")
+
+EDIT_PROMPT = """Sos el asistente de edición de informes ecográficos de la Dra. Silvina Raffo (M.P. 11901). Tu rol es EDITOR INTELIGENTE, no transcriptor.
+
+═══════════════════════════════
+QUIÉN SOS Y QUÉ HACÉS
+═══════════════════════════════
+Sos un veterinario experto en ecografía que ENTIENDE instrucciones habladas y las EJECUTA sobre un informe existente. La Dra. te habla como le hablaría a un colega: informal, con sobreentendidos, a veces incompleta. Tu trabajo es INTERPRETAR qué quiere y hacerlo.
+
+TODO lo que la Dra. dice es una INSTRUCCIÓN sobre el informe, NUNCA texto literal para copiar. Ella NO está dictando texto nuevo — está dando ÓRDENES de edición.
+
+═══════════════════════════════
+INSTRUCCIONES QUE DEBÉS RECONOCER
+═══════════════════════════════
+- "sacá eso" / "borrá X" / "quitá la parte de X" → ELIMINÁS esa parte
+- "cambiá X por Y" / "donde dice X poné Y" → REEMPLAZÁS
+- "agregá a [órgano]..." / "sumale que..." → AGREGÁS información
+- "completá" / "completá esa frase" / "completalo" → COMPLETÁS con tu criterio médico veterinario
+- "mejorá la narración" / "que quede mejor redactado" → REESCRIBÍS con mejor prosa médica sin cambiar contenido
+- "hacé la conclusión" / "poné la conclusión" / "completá la conclusión" → GENERÁS una conclusión como SÍNTESIS de todos los hallazgos patológicos
+- "según la tabla" / "como en la tabla" / "usá la tabla" / "según nuestro prompt" / "según nuestros patrones" → Usás las TABLAS DE REFERENCIA que te paso más abajo para completar o mejorar el texto con el estilo y vocabulario de referencia
+- "calculame el volumen" / "hacé la cuenta" → Calculás (largo × ancho × alto × 0.523) y mostrás solo medidas + resultado, SIN mostrar el 0.523
+- Cualquier otra cosa → INTERPRETÁS la intención y EJECUTÁS
+
+═══════════════════════════════
+LO QUE NUNCA HACÉS
+═══════════════════════════════
+- NUNCA escribís la instrucción como texto literal en el informe. Si dice "según la tabla poné hepatomegalia moderada", NO escribís "según la tabla poné hepatomegalia moderada" — escribís la descripción de hepatomegalia moderada.
+- NUNCA tocás partes del informe que la instrucción no menciona
+- NUNCA reescribís todo de cero — solo modificás lo pedido
+- NUNCA inventás datos clínicos que no estén en el informe ni en la instrucción
+
+═══════════════════════════════
+CONCLUSIÓN
+═══════════════════════════════
+Cuando te pidan la conclusión:
+- Es una SÍNTESIS diagnóstica, NO una copia del cuerpo
+- Listá cada hallazgo patológico con * precediendo cada uno
+- Incluí grado de severidad y localización
+- Al final: "* Órganos sin particularidades: [listar] sin particularidades ecográficas significativas."
+- Cerrar con: "Informe realizado por:\\nM.V. Raffo Silvina"
+
+═══════════════════════════════
+FORMATO DE RESPUESTA
+═══════════════════════════════
+Devolvé el informe COMPLETO (original + modificaciones). JSON válido sin markdown:
+{"cuerpo_informe": "informe completo modificado", "cambios_realizados": "qué cambiaste"}"""
+
+
+@app.post("/api/edit-report")
+async def api_edit_report(req: EditReq):
+    """Edit an existing report with voice/text instructions."""
+    cfg = PROVIDERS.get(req.provider)
+    if not cfg:
+        raise HTTPException(400, "Proveedor no soportado")
+
+    messages = [
+        {"role": "system", "content": EDIT_PROMPT},
+    ]
+    # Add reference tables so GPT understands "según la tabla"
+    if TABLA_HALLAZGOS:
+        tabla_txt = "TABLAS DE REFERENCIA (cuando la Dra. dice 'según la tabla', 'usá la tabla', " \
+                    "'según nuestros patrones', se refiere a ESTO — adaptá al caso real):\n\n" + \
+                    "\n\n".join(e["texto"] for e in TABLA_HALLAZGOS)
+        messages.append({"role": "system", "content": tabla_txt})
+    if FRASES_HISTORICAS:
+        messages.append({"role": "system", "content":
+            "FRASES DE ESTILO DE LA DRA (usá este vocabulario cuando pida 'mejorar narración' o 'completar'):\n- " +
+            "\n- ".join(FRASES_HISTORICAS[:50])})
+    messages.append({"role": "user", "content": f"""INFORME ACTUAL:
+---
+Paciente datos: Tutor: {req.tutor}, Mascota: {req.mascota}, Fecha: {req.fecha}, Méd. Derivante: {req.medico_derivante}
+
+{req.current_report}
+---
+
+INSTRUCCIÓN DE LA DRA:
+{req.instruction}"""}
+    ]
+
+    async with httpx.AsyncClient(timeout=30.0) as c:
+        r = await c.post(cfg["url"],
+            headers={"Authorization": f"Bearer {req.api_key}", "Content-Type": "application/json"},
+            json={"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": 4000})
+
+    if r.status_code != 200:
+        raise HTTPException(r.status_code, f"LLM error: {r.json().get('error',{}).get('message', r.text)}")
+
+    content = r.json()["choices"][0]["message"]["content"]
+    try:
+        result = json.loads(content.replace("```json", "").replace("```", "").strip())
+    except:
+        result = {"cuerpo_informe": content, "cambios_realizados": "respuesta no estructurada"}
+
+    # Post-process volume
+    if result.get("cuerpo_informe"):
+        import re as _re
+        body = result["cuerpo_informe"]
+        body = _re.sub(r'\s*[×x]\s*0[.,]523\s*', ' ', body)
+        result["cuerpo_informe"] = body
+
+    return result
+
+@app.post("/api/generate-pdf")
+async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
+                  medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
+                  font_size: int = Form(10), margin_level: int = Form(0), line_spacing: int = Form(1),
+                  images: list[UploadFile] = File(default=[])):
+    if not TEMPLATE_PATH.exists():
+        raise HTTPException(500, "Plantilla no encontrada")
+    img_paths = []
+    for img in images:
+        p = UPLOADS_DIR / f"temp_{img.filename}"
+        p.write_bytes(await img.read())
+        img_paths.append(str(p))
+
+    pdf = generate_pdf({"tutor": tutor, "fecha": fecha, "mascota": mascota,
+                        "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe}, img_paths, font_size, margin_level, line_spacing)
+
+    for p in img_paths:
+        try: os.unlink(p)
+        except: pass
+
+    fn = f"Informe_{mascota or 'eco'}_{fecha.replace('/', '_')}.pdf"
+    return StreamingResponse(io.BytesIO(pdf), media_type="application/pdf",
+                             headers={"Content-Disposition": f'inline; filename="{fn}"'})
+
+@app.post("/api/save-report")
+async def save_report(tutor: str = Form(""), fecha: str = Form(""), mascota: str = Form(""),
+                      medico_derivante: str = Form(""), cuerpo_informe: str = Form(""),
+                      transcripcion_original: str = Form("")):
+    """Save report to Supabase and extract learning patterns."""
+    result = {"saved": False, "id": None, "patterns_learned": 0}
+
+    if SUPABASE_URL:
+        # Save the report
+        row = await supa_post("informes", {
+            "fecha": fecha, "tutor": tutor, "mascota": mascota,
+            "medico_derivante": medico_derivante, "cuerpo_informe": cuerpo_informe,
+            "transcripcion_original": transcripcion_original,
+        })
+        if row and isinstance(row, list) and len(row) > 0:
+            result = {"saved": True, "id": row[0].get("id"), "patterns_learned": 0}
+        elif row:
+            result = {"saved": True, "id": None, "patterns_learned": 0}
+
+        # Extract and save learning patterns from the report text
+        if cuerpo_informe:
+            patterns = extract_patterns_from_report(cuerpo_informe)
+            if patterns:
+                await save_patterns(patterns)
+                result["patterns_learned"] = len(patterns.get("frases_nuevas", [])) + len(patterns.get("terminos_preferidos", {}))
+
+    return result
+
+
+def extract_patterns_from_report(text):
+    """Extract reusable STYLE patterns from a completed report. NOT patient data."""
+    import re as _re
+    patterns = {"frases_nuevas": [], "terminos_preferidos": {}, "correcciones_frecuentes": []}
+
+    # Only extract GENERIC phrases (no specific measurements, no patient names)
+    style_phrases = [
+        r"[Hh]allazgos sugestivos de [a-záéíóúñ ]+",
+        r"[Cc]ompatible con [a-záéíóúñ ]+",
+        r"[Bb]ordes [a-záéíóúñ,]+ y [a-záéíóúñ ]+",
+        r"[Pp]atrón [a-záéíóúñ ]+ conservado",
+        r"[Ee]cogenicidad [a-záéíóúñ ]+",
+        r"[Dd]istensión [a-záéíóúñ ]+ a expensas de [a-záéíóúñ ]+",
+    ]
+
+    for pattern in style_phrases:
+        matches = _re.findall(pattern, text)
+        for m in matches:
+            cleaned = m.strip().rstrip(".,;")
+            # Skip if contains numbers (patient-specific data)
+            if _re.search(r'\d', cleaned):
+                continue
+            # Skip if too short or too long
+            if len(cleaned) < 15 or len(cleaned) > 80:
+                continue
+            patterns["frases_nuevas"].append(cleaned)
+
+    # Deduplicate and limit
+    patterns["frases_nuevas"] = list(set(patterns["frases_nuevas"]))[:15]
+
+    return patterns if patterns["frases_nuevas"] else None
+
+@app.get("/api/stats")
+async def stats():
+    if not SUPABASE_URL:
+        return {"total_informes": 0, "patrones": 0}
+    informes = await supa_get("informes", "select=id")
+    estilo = await supa_get("estilo", "select=id")
+    return {
+        "total_informes": len(informes) if isinstance(informes, list) else 0,
+        "patrones": len(estilo) if isinstance(estilo, list) else 0
+    }
+
+@app.get("/api/informes")
+async def list_informes():
+    return await supa_get("informes", "select=*&order=created_at.desc&limit=50")
+
+@app.get("/api/estilo")
+async def get_estilo():
+    return await load_style()
+
+@app.post("/api/process-all-reports")
+async def process_all_reports():
+    """Fetch all saved reports, extract patterns from each, save to estilo table."""
+    if not SUPABASE_URL:
+        return {"processed": 0, "patterns": 0}
+
+    informes = await supa_get("informes", "select=id,cuerpo_informe&order=created_at.desc&limit=100")
+    if not isinstance(informes, list):
+        return {"processed": 0, "patterns": 0}
+
+    total_patterns = 0
+    processed = 0
+
+    for informe in informes:
+        texto = informe.get("cuerpo_informe", "")
+        if not texto or len(texto) < 50:
+            continue
+
+        patterns = extract_patterns_from_report(texto)
+        if patterns:
+            await save_patterns(patterns)
+            total_patterns += len(patterns.get("frases_nuevas", []))
+            processed += 1
+
+    return {"processed": processed, "patterns": total_patterns}
+
+@app.post("/api/cleanup-patterns")
+async def cleanup_patterns():
+    """Delete all patterns and re-extract from scratch (clean)."""
+    if not SUPABASE_URL:
+        return {"deleted": 0, "reprocessed": 0}
+
+    # Delete all existing patterns
+    async with httpx.AsyncClient() as c:
+        r = await c.delete(
+            f"{SUPABASE_URL}/rest/v1/estilo?id=gt.0",
+            headers=supa_headers())
+    deleted = 0
+    if r.status_code in (200, 204):
+        deleted = 1
+
+    # Re-extract from all reports with the improved extractor
+    informes = await supa_get("informes", "select=id,cuerpo_informe&order=created_at.desc&limit=100")
+    total = 0
+    if isinstance(informes, list):
+        for inf in informes:
+            texto = inf.get("cuerpo_informe", "")
+            if texto and len(texto) > 50:
+                patterns = extract_patterns_from_report(texto)
+                if patterns:
+                    await save_patterns(patterns)
+                    total += len(patterns.get("frases_nuevas", []))
+
+    return {"deleted": deleted, "new_patterns": total}
