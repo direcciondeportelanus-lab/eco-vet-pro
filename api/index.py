@@ -236,7 +236,7 @@ TABLA_HALLAZGOS = load_tabla_hallazgos()
 PROVIDERS = {
     "groq": {"url": "https://api.groq.com/openai/v1/chat/completions", "model": "llama-3.3-70b-versatile",
              "whisper_url": "https://api.groq.com/openai/v1/audio/transcriptions", "whisper_model": "whisper-large-v3"},
-    "openai": {"url": "https://api.openai.com/v1/chat/completions", "model": "gpt-4o-mini",
+    "openai": {"url": "https://api.openai.com/v1/chat/completions", "model": "gpt-4o",
                "whisper_url": "https://api.openai.com/v1/audio/transcriptions", "whisper_model": "whisper-1"},
 }
 
@@ -286,28 +286,44 @@ async def call_llm(provider, api_key, text, style):
     cfg = PROVIDERS.get(provider)
     if not cfg:
         raise HTTPException(400, "Proveedor no soportado")
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    if FRASES_HISTORICAS:
-        banco = "BANCO DE FRASES Y PATRONES DE REDACCIÓN HABITUALES DE LA DRA. " \
-                "(usalos como referencia de vocabulario y estilo cuando el caso lo amerite, " \
-                "no los repitas literal si no corresponde al hallazgo real):\n- " + \
-                "\n- ".join(FRASES_HISTORICAS)
-        messages.append({"role": "system", "content": banco})
-    if TABLA_HALLAZGOS:
-        tabla_txt = "TABLA DE HALLAZGOS DE REFERENCIA POR ÓRGANO. Si la Dra. dice algo como " \
-                    "'hepatomegalia leve de la tabla' o pide reutilizar un patrón conocido, " \
-                    "buscá la entrada que mejor matchee y ADAPTALA a lo que pida (medidas, " \
-                    "severidad, lo que cambie) -- nunca la copies literal si el caso real difiere:\n\n" + \
-                    "\n\n".join(e["texto"] for e in TABLA_HALLAZGOS)
-        messages.append({"role": "system", "content": tabla_txt})
-    if style and any(style.values()):
-        messages.append({"role": "system", "content": f"ESTILO APRENDIDO:\n{json.dumps(style, ensure_ascii=False)}"})
-    messages.append({"role": "user", "content": text})
 
-    async with httpx.AsyncClient(timeout=30.0) as c:
+    # Build ONE consolidated system message (GPT retains better with single system msg)
+    system_parts = [SYSTEM_PROMPT]
+
+    if FRASES_HISTORICAS:
+        system_parts.append(
+            "\n═══════════════════════════════\n"
+            "BANCO DE FRASES DE LA DRA. RAFFO\n"
+            "═══════════════════════════════\n"
+            "Usá estas frases como referencia de estilo y vocabulario. "
+            "ADAPTÁ al caso real, no copies literal si no corresponde:\n- " +
+            "\n- ".join(FRASES_HISTORICAS[:40]))
+
+    if TABLA_HALLAZGOS:
+        system_parts.append(
+            "\n═══════════════════════════════\n"
+            "TABLA DE HALLAZGOS POR ÓRGANO\n"
+            "═══════════════════════════════\n"
+            "Si la Dra. dice 'de la tabla', 'como el patrón', 'completá según la tabla', "
+            "buscá la entrada que mejor matchee y ADAPTALA al caso:\n\n" +
+            "\n\n".join(e["texto"] for e in TABLA_HALLAZGOS[:30]))
+
+    if style and any(style.values()):
+        system_parts.append(
+            "\n═══════════════════════════════\n"
+            "ESTILO APRENDIDO\n"
+            "═══════════════════════════════\n" +
+            json.dumps(style, ensure_ascii=False))
+
+    messages = [
+        {"role": "system", "content": "\n".join(system_parts)},
+        {"role": "user", "content": text}
+    ]
+
+    async with httpx.AsyncClient(timeout=60.0) as c:
         r = await c.post(cfg["url"],
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": 3000})
+            json={"model": cfg["model"], "messages": messages, "temperature": 0.2, "max_tokens": 4000})
     if r.status_code != 200:
         raise HTTPException(r.status_code, f"LLM error: {r.json().get('error',{}).get('message', r.text)}")
 
