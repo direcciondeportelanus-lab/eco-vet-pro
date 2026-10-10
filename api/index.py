@@ -798,8 +798,8 @@ async def api_pdf(tutor: str = Form(""), fecha: str = Form(""), mascota: str = F
     if not TEMPLATE_PATH.exists():
         raise HTTPException(500, "Plantilla no encontrada")
     img_paths = []
-    for img in images:
-        p = UPLOADS_DIR / f"temp_{img.filename}"
+    for i, img in enumerate(images):
+        p = UPLOADS_DIR / f"temp_{i}_{os.path.basename(img.filename or 'img')}"
         p.write_bytes(await img.read())
         img_paths.append(str(p))
 
