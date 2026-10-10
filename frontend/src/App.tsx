@@ -31,6 +31,7 @@ export default function App(){
   const mediaRec=useRef<MediaRecorder|null>(null)
   const chunks=useRef<Blob[]>([])
   const fileRef=useRef<HTMLInputElement>(null)
+  const filePickRef=useRef<HTMLInputElement>(null)
 
   useEffect(()=>{getStats().then(setStats).catch(()=>{})},[view,step])
   useEffect(()=>{
@@ -157,7 +158,18 @@ ${transcription}`
     try{const r=await structureReport(textoAEnviar,provider,apiKey);setData({tutor:r.tutor||data.tutor||'',fecha:r.fecha||data.fecha,mascota:r.mascota||data.mascota||'',medico_derivante:r.medico_derivante||data.medico_derivante||'',cuerpo_informe:r.cuerpo_informe||''});setSuccess('Informe estructurado');setStep('edit')}catch(e:any){setError(e.message)}
     setPhase('idle')
   }
-  const addImgs=(e:React.ChangeEvent<HTMLInputElement>)=>{Array.from(e.target.files||[]).forEach(f=>{setImgFiles(p=>[...p,f]);const r=new FileReader();r.onload=ev=>setImgPrevs(p=>[...p,ev.target?.result as string]);r.readAsDataURL(f)});e.target.value=''}
+  // El selector "Archivos / Drive" no filtra por tipo (así Android abre el explorador de archivos
+  // completo con Drive, en vez del selector de fotos). Filtramos las imágenes acá.
+  const addImgs=(e:React.ChangeEvent<HTMLInputElement>)=>{
+    const all=Array.from(e.target.files||[])
+    const isImg=(f:File)=>f.type.startsWith('image/')||/\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(f.name)
+    const ok=all.filter(isImg)
+    if(ok.length<all.length)setError(`${all.length-ok.length} archivo(s) ignorado(s): solo se aceptan imágenes`)
+    const room=Math.max(0,18-imgFiles.length)
+    if(ok.length>room)setError(`Máximo 18 imágenes: se agregaron ${room} de ${ok.length}`)
+    ok.slice(0,room).forEach(f=>{setImgFiles(p=>[...p,f]);const r=new FileReader();r.onload=ev=>setImgPrevs(p=>[...p,ev.target?.result as string]);r.readAsDataURL(f)})
+    e.target.value=''
+  }
   const delImg=(i:number)=>{setImgFiles(p=>p.filter((_,j)=>j!==i));setImgPrevs(p=>p.filter((_,j)=>j!==i))}
   const makePDF=async()=>{setProcessing(true);setError('');try{const b=await generatePDF(data,imgFiles,fontSize);setPdfUrl(URL.createObjectURL(b));setStep('done')}catch(e:any){setError(e.message)};setProcessing(false)}
   const sharePDF=async()=>{if(!pdfUrl)return;const b=await(await fetch(pdfUrl)).blob();const f=new File([b],`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`,{type:'application/pdf'});if(navigator.share?.({files:[f]}))await navigator.share({files:[f]});else{const a=document.createElement('a');a.href=pdfUrl;a.download=f.name;a.click()}}
@@ -327,15 +339,14 @@ ${transcription}`
                   <span className="mic-sub">{phase==='idle'&&`Transcripción y estructura con ${prov}`}</span>
                 </div>
               </div></div>
-              {transcription&&(
-                <div className="panel">
-                  <div className="panel-head"><span className="panel-title"><FileText size={16}/> Transcripción</span></div>
-                  <div className="panel-body">
-                    <textarea className="form-input" value={transcription} onChange={e=>setTranscription(e.target.value)} rows={5}/>
-                    <button className="btn btn-blue" style={{marginTop:14}} onClick={manualProcess} disabled={phase!=='idle'}><Sparkles size={16}/> Re-estructurar con {prov}</button>
-                  </div>
+              <div className="panel">
+                <div className="panel-head"><span className="panel-title"><Pencil size={16}/> {transcription?'Texto del informe':'O escribilo'}</span></div>
+                <div className="panel-body">
+                  <textarea className="form-input" value={transcription} onChange={e=>setTranscription(e.target.value)} rows={transcription?5:7}
+                    placeholder="Escribí o pegá acá el informe como lo dictarías (hígado, vesícula, riñones...). También podés dictar con el micrófono y corregir el texto antes de estructurar."/>
+                  <button className="btn btn-blue" style={{marginTop:14}} onClick={manualProcess} disabled={phase!=='idle'||!transcription.trim()}><Sparkles size={16}/> {data.cuerpo_informe?'Re-estructurar':'Estructurar'} con {prov}</button>
                 </div>
-              )}
+              </div>
             </>)}
 
             {step==='edit'&&(<>
@@ -402,7 +413,11 @@ ${transcription}`
                 <div className="panel-head"><span className="panel-title"><Camera size={16}/> Ecografías (hasta 18)</span></div>
                 <div className="panel-body">
                   <input ref={fileRef} type="file" accept="image/*" multiple onChange={addImgs} style={{display:'none'}}/>
-                  <button className="btn btn-glass" style={{marginTop:0}} onClick={()=>fileRef.current?.click()}><Image size={16}/> Seleccionar imágenes</button>
+                  <input ref={filePickRef} type="file" multiple onChange={addImgs} style={{display:'none'}}/>
+                  <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
+                    <button className="btn btn-glass" style={{marginTop:0,flex:1,minWidth:160}} onClick={()=>fileRef.current?.click()}><Image size={16}/> Galería / Fotos</button>
+                    <button className="btn btn-glass" style={{marginTop:0,flex:1,minWidth:160}} onClick={()=>filePickRef.current?.click()}><FolderOpen size={16}/> Archivos / Drive</button>
+                  </div>
                   {imgPrevs.length>0&&<>
                     <div className="img-grid">{imgPrevs.map((s,i)=>(<div key={i} className="img-item"><img src={s} className="img-thumb"/><button className="img-del" onClick={()=>delImg(i)}>✕</button></div>))}</div>
                     <p style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>{imgPrevs.length} imagen(es) — 9 por página, grilla 3×3</p>
