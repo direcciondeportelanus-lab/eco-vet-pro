@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
 import { whisperTranscribe, structureReport, generatePDF, compressImage, getStats, saveReport, getReports, getEstilo, processAllReports, editReport, cleanupPatterns } from './api/client'
+import { pickFromDrive, driveEnabled } from './api/drive'
 
 type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -160,20 +161,44 @@ ${transcription}`
   }
   // El selector "Archivos / Drive" no filtra por tipo (así Android abre el explorador de archivos
   // completo con Drive, en vez del selector de fotos). Filtramos las imágenes acá.
-  const addImgs=async(e:React.ChangeEvent<HTMLInputElement>)=>{
-    const all=Array.from(e.target.files||[])
-    e.target.value=''
+  const imgCount=useRef(0)
+  useEffect(()=>{imgCount.current=imgFiles.length},[imgFiles])
+  const addFiles=async(all:File[])=>{
     const isImg=(f:File)=>f.type.startsWith('image/')||/\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(f.name)
     const ok=all.filter(isImg)
     if(ok.length<all.length)setError(`${all.length-ok.length} archivo(s) ignorado(s): solo se aceptan imágenes`)
-    const room=Math.max(0,18-imgFiles.length)
+    const room=Math.max(0,18-imgCount.current)
     if(ok.length>room)setError(`Máximo 18 imágenes: se agregaron ${room} de ${ok.length}`)
     for(const f of ok.slice(0,room)){
       const c=await compressImage(f)
       const url=await new Promise<string>(res=>{const r=new FileReader();r.onload=()=>res(r.result as string);r.readAsDataURL(c)})
+      imgCount.current++
       setImgFiles(p=>[...p,c]);setImgPrevs(p=>[...p,url])
     }
   }
+  const addFilesRef=useRef(addFiles)
+  addFilesRef.current=addFiles
+  const addImgs=(e:React.ChangeEvent<HTMLInputElement>)=>{
+    const all=Array.from(e.target.files||[])
+    e.target.value=''
+    addFiles(all)
+  }
+  const addFromDrive=async()=>{
+    setError('');setProcessing(true)
+    try{const f=await pickFromDrive();if(f.length)await addFiles(f)}
+    catch(e:any){setError('Drive: '+(e.message||'error'))}
+    setProcessing(false)
+  }
+  // Pegar imágenes con Ctrl+V (solo cuando está el panel de ecografías)
+  useEffect(()=>{
+    const onPaste=(e:ClipboardEvent)=>{
+      if(!document.getElementById('img-panel'))return
+      const fs=Array.from(e.clipboardData?.files||[])
+      if(fs.length){e.preventDefault();addFilesRef.current(fs)}
+    }
+    window.addEventListener('paste',onPaste)
+    return()=>window.removeEventListener('paste',onPaste)
+  },[])
   const delImg=(i:number)=>{setImgFiles(p=>p.filter((_,j)=>j!==i));setImgPrevs(p=>p.filter((_,j)=>j!==i))}
   const makePDF=async()=>{setProcessing(true);setError('');try{const b=await generatePDF(data,imgFiles,fontSize);setPdfUrl(URL.createObjectURL(b));setStep('done')}catch(e:any){setError(e.message)};setProcessing(false)}
   const sharePDF=async()=>{if(!pdfUrl)return;const b=await(await fetch(pdfUrl)).blob();const f=new File([b],`Informe_${data.mascota||'eco'}_${data.fecha.replace(/\//g,'-')}.pdf`,{type:'application/pdf'});if(navigator.share?.({files:[f]}))await navigator.share({files:[f]});else{const a=document.createElement('a');a.href=pdfUrl;a.download=f.name;a.click()}}
@@ -415,13 +440,15 @@ ${transcription}`
               </div>
               <div className="panel">
                 <div className="panel-head"><span className="panel-title"><Camera size={16}/> Ecografías (hasta 18)</span></div>
-                <div className="panel-body">
+                <div className="panel-body" id="img-panel" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();addFiles(Array.from(e.dataTransfer.files||[]))}}>
                   <input ref={fileRef} type="file" accept="image/*" multiple onChange={addImgs} style={{display:'none'}}/>
                   <input ref={filePickRef} type="file" multiple onChange={addImgs} style={{display:'none'}}/>
                   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}>
                     <button className="btn btn-glass" style={{marginTop:0,flex:1,minWidth:160}} onClick={()=>fileRef.current?.click()}><Image size={16}/> Galería / Fotos</button>
                     <button className="btn btn-glass" style={{marginTop:0,flex:1,minWidth:160}} onClick={()=>filePickRef.current?.click()}><FolderOpen size={16}/> Archivos / Drive</button>
+                    {driveEnabled&&<button className="btn btn-glass" style={{marginTop:0,flex:1,minWidth:160}} onClick={addFromDrive} disabled={processing}><FolderOpen size={16}/> Google Drive</button>}
                   </div>
+                  <p style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>También podés arrastrar imágenes acá o pegarlas con Ctrl+V</p>
                   {imgPrevs.length>0&&<>
                     <div className="img-grid">{imgPrevs.map((s,i)=>(<div key={i} className="img-item"><img src={s} className="img-thumb"/><button className="img-del" onClick={()=>delImg(i)}>✕</button></div>))}</div>
                     <p style={{fontSize:12,color:'var(--text-muted)',marginTop:8}}>{imgPrevs.length} imagen(es) — 9 por página, grilla 3×3</p>
