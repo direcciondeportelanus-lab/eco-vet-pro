@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { Mic, Square, Loader, Plus, Search, Settings, LayoutDashboard, FileText, FolderOpen, Image, Brain, Tag, TrendingUp, Camera, Sparkles, HeartPulse, Scan, ArrowLeft, Pencil, Send, Menu, X, Save, Download } from 'lucide-react'
-import { whisperTranscribe, structureReport, generatePDF, getStats, saveReport, getReports, getEstilo, processAllReports, editReport, cleanupPatterns } from './api/client'
+import { whisperTranscribe, structureReport, generatePDF, compressImage, getStats, saveReport, getReports, getEstilo, processAllReports, editReport, cleanupPatterns } from './api/client'
 
 type View='dashboard'|'nuevo'|'informes'|'biblioteca'; type Phase='idle'|'recording'|'transcribing'|'structuring'; type Step='record'|'edit'|'done'
 interface Report{tutor:string;fecha:string;mascota:string;medico_derivante:string;cuerpo_informe:string}
@@ -160,15 +160,19 @@ ${transcription}`
   }
   // El selector "Archivos / Drive" no filtra por tipo (así Android abre el explorador de archivos
   // completo con Drive, en vez del selector de fotos). Filtramos las imágenes acá.
-  const addImgs=(e:React.ChangeEvent<HTMLInputElement>)=>{
+  const addImgs=async(e:React.ChangeEvent<HTMLInputElement>)=>{
     const all=Array.from(e.target.files||[])
+    e.target.value=''
     const isImg=(f:File)=>f.type.startsWith('image/')||/\.(jpe?g|png|webp|gif|bmp|heic|heif)$/i.test(f.name)
     const ok=all.filter(isImg)
     if(ok.length<all.length)setError(`${all.length-ok.length} archivo(s) ignorado(s): solo se aceptan imágenes`)
     const room=Math.max(0,18-imgFiles.length)
     if(ok.length>room)setError(`Máximo 18 imágenes: se agregaron ${room} de ${ok.length}`)
-    ok.slice(0,room).forEach(f=>{setImgFiles(p=>[...p,f]);const r=new FileReader();r.onload=ev=>setImgPrevs(p=>[...p,ev.target?.result as string]);r.readAsDataURL(f)})
-    e.target.value=''
+    for(const f of ok.slice(0,room)){
+      const c=await compressImage(f)
+      const url=await new Promise<string>(res=>{const r=new FileReader();r.onload=()=>res(r.result as string);r.readAsDataURL(c)})
+      setImgFiles(p=>[...p,c]);setImgPrevs(p=>[...p,url])
+    }
   }
   const delImg=(i:number)=>{setImgFiles(p=>p.filter((_,j)=>j!==i));setImgPrevs(p=>p.filter((_,j)=>j!==i))}
   const makePDF=async()=>{setProcessing(true);setError('');try{const b=await generatePDF(data,imgFiles,fontSize);setPdfUrl(URL.createObjectURL(b));setStep('done')}catch(e:any){setError(e.message)};setProcessing(false)}
