@@ -21,6 +21,22 @@ export async function structureReport(transcription: string, provider: string, a
   return res.json()
 }
 
+// Celda del PDF: 145x175 pt. A ~290 dpi => 580x700 px. Se ajusta SIN deformar ni recortar.
+export async function compressImage(file: File, maxW = 580, maxH = 700, quality = 0.8): Promise<File> {
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' })
+    const scale = Math.min(1, maxW / bmp.width, maxH / bmp.height)
+    const w = Math.round(bmp.width * scale), h = Math.round(bmp.height * scale)
+    const c = document.createElement('canvas'); c.width = w; c.height = h
+    const ctx = c.getContext('2d')!
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h)
+    ctx.drawImage(bmp, 0, 0, w, h); bmp.close()
+    const blob = await new Promise<Blob | null>(r => c.toBlob(r, 'image/jpeg', quality))
+    if (!blob) throw new Error('toBlob')
+    return new File([blob], file.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' })
+  } catch { return file }
+}
+
 export async function generatePDF(data: Record<string, string>, images: File[], fontSize: number = 10, marginLevel: number = 0, lineSpacing: number = 1) {
   const form = new FormData()
   Object.entries(data).forEach(([k, v]) => form.append(k, v))
@@ -29,7 +45,7 @@ export async function generatePDF(data: Record<string, string>, images: File[], 
   form.append('line_spacing', lineSpacing.toString())
   images.forEach(img => form.append('images', img))
   const res = await fetch(`${API_BASE}/generate-pdf`, { method: 'POST', body: form })
-  if (!res.ok) throw new Error('Error al generar PDF')
+  if (!res.ok) throw new Error(res.status === 413 ? 'Imágenes demasiado pesadas' : 'Error al generar PDF')
   return res.blob()
 }
 
